@@ -112,7 +112,7 @@ VKDisplay::VKDisplay(SDL_Window *window)
         attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         VkAttachmentReference color_attachment = {};
         color_attachment.attachment = 0;
@@ -411,6 +411,19 @@ void VKDisplay::display_native(std::shared_ptr<vkrt::Texture2D> &img)
                    1,
                    &blit,
                    VK_FILTER_NEAREST);
+
+    img_mem_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         0,
+                         0,
+                         nullptr,
+                         0,
+                         nullptr,
+                         1,
+                         &img_mem_barrier);
 
     VkRenderPassBeginInfo render_pass_info = {};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
