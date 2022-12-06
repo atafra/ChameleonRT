@@ -100,7 +100,8 @@ void Scene::load_obj(const std::string &file)
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> obj_materials;
     std::string err, warn;
-    const std::string obj_base_dir = file.substr(0, file.rfind('/'));
+    const size_t file_last_sep = file.find_last_of("/\\");
+    const std::string obj_base_dir = (file_last_sep == std::string::npos) ? "." : file.substr(0, file_last_sep);
     bool ret = tinyobj::LoadObj(
         &attrib, &shapes, &obj_materials, &warn, &err, file.c_str(), obj_base_dir.c_str());
     if (!warn.empty()) {
@@ -626,7 +627,8 @@ void Scene::load_pbrt(const std::string &file)
         throw e;
     }
 
-    const std::string pbrt_base_dir = file.substr(0, file.rfind('/'));
+    const size_t file_last_sep = file.find_last_of("/\\");
+    const std::string pbrt_base_dir = (file_last_sep == std::string::npos) ? "." : file.substr(0, file_last_sep);
 
     // TODO: The world can also have some top-level things we may need to load. But is this
     // common? Or does Ingo's make single level flatten these down to a shape?
