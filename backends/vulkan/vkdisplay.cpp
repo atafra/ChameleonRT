@@ -201,6 +201,8 @@ VKDisplay::VKDisplay(SDL_Window *window)
 
 VKDisplay::~VKDisplay()
 {
+    vkDeviceWaitIdle(device->logical_device());
+
     ImGui_ImplVulkan_Shutdown();
     for (auto &v : swap_chain_image_views) {
         vkDestroyImageView(device->logical_device(), v, nullptr);
