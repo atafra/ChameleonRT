@@ -111,7 +111,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     ray_counts.resize(img.size(), 0);
 #endif
 
-    // Change image and accum buffer to the general layout
+    // Change image to the general layout
     {
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -531,12 +531,12 @@ void RenderVulkan::set_scene(const Scene &scene)
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
 
-        // Transition image to the general layout
+        // Transition image to transfer destination optimal layout
         VkImageMemoryBarrier img_mem_barrier = {};
         img_mem_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         img_mem_barrier.image = tex->image_handle();
         img_mem_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         img_mem_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         img_mem_barrier.subresourceRange.baseMipLevel = 0;
         img_mem_barrier.subresourceRange.levelCount = 1;
@@ -575,12 +575,12 @@ void RenderVulkan::set_scene(const Scene &scene)
         vkCmdCopyBufferToImage(command_buffer,
                                upload_buf->handle(),
                                tex->image_handle(),
-                               VK_IMAGE_LAYOUT_GENERAL,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                1,
                                &img_copy);
 
         // Transition image to shader read optimal layout
-        img_mem_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        img_mem_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         vkCmdPipelineBarrier(command_buffer,
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
