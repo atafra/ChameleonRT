@@ -252,4 +252,9 @@ public:
     void update(Device &device);
 };
 
+VkPipeline build_compute_pipeline(Device &device,
+                                  VkPipelineLayout layout,
+                                  const std::shared_ptr<ShaderModule> &shader,
+                                  const std::string &entry_point = "main");
+
 }

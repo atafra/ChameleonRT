@@ -1,0 +1,21 @@
+#version 460
+
+#include "util.glsl"
+
+layout(binding = 1, set = 0, rgba8) uniform writeonly image2D framebuffer;
+layout(binding = 2, set = 0) buffer _accum_buffer { vec4 accum_buffer[]; };
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+void main() {
+  const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+  const ivec2 dims = imageSize(framebuffer);
+  if (pixel.x >= dims.x || pixel.y >= dims.y)
+    return;
+
+  const uint pixel_index = dims.x * pixel.y + pixel.x;
+  vec4 accum_color = accum_buffer[pixel_index];
+  accum_color.xyz = vec3(linear_to_srgb(accum_color.x), linear_to_srgb(accum_color.y),
+          linear_to_srgb(accum_color.z));
+  imageStore(framebuffer, pixel, vec4(accum_color.xyz, 1.f));
+}

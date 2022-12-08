@@ -33,6 +33,8 @@ RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
         CHECK_VULKAN(
             vkAllocateCommandBuffers(device->logical_device(), &info, &render_cmd_buf));
         CHECK_VULKAN(
+            vkAllocateCommandBuffers(device->logical_device(), &info, &tonemap_cmd_buf));
+        CHECK_VULKAN(
             vkAllocateCommandBuffers(device->logical_device(), &info, &readback_cmd_buf));
     }
 
@@ -71,6 +73,7 @@ RenderVulkan::~RenderVulkan()
     vkDestroyDescriptorSetLayout(device->logical_device(), textures_desc_layout, nullptr);
     vkDestroyDescriptorPool(device->logical_device(), desc_pool, nullptr);
     vkDestroyFence(device->logical_device(), fence, nullptr);
+    vkDestroyPipeline(device->logical_device(), tonemap_pipeline, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
 }
 
@@ -90,10 +93,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                 VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
-    accum_buffer = vkrt::Texture2D::device(*device,
-                                           glm::uvec2(fb_width, fb_height),
-                                           VK_FORMAT_R32G32B32A32_SFLOAT,
-                                           VK_IMAGE_USAGE_STORAGE_BIT);
+    accum_buffer = vkrt::Buffer::device(*device,
+                                        sizeof(glm::vec4) * fb_width * fb_height,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     img_readback_buf = vkrt::Buffer::host(
         *device, img.size() * render_target->pixel_size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -117,9 +119,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
 
 #ifndef REPORT_RAY_STATS
-        std::array<VkImageMemoryBarrier, 2> barriers = {};
+        std::array<VkImageMemoryBarrier, 1> barriers = {};
 #else
-        std::array<VkImageMemoryBarrier, 3> barriers = {};
+        std::array<VkImageMemoryBarrier, 2> barriers = {};
 #endif
         for (auto &b : barriers) {
             b = VkImageMemoryBarrier{};
@@ -133,9 +135,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
             b.subresourceRange.layerCount = 1;
         }
         barriers[0].image = render_target->image_handle();
-        barriers[1].image = accum_buffer->image_handle();
 #ifdef REPORT_RAY_STATS
-        barriers[2].image = ray_stats->image_handle();
+        barriers[1].image = ray_stats->image_handle();
 #endif
 
         vkCmdPipelineBarrier(command_buffer,
@@ -171,7 +172,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     if (desc_set != VK_NULL_HANDLE) {
         vkrt::DescriptorSetUpdater()
             .write_storage_image(desc_set, 1, render_target)
-            .write_storage_image(desc_set, 2, accum_buffer)
+            .write_ssbo(desc_set, 2, accum_buffer)
 #ifdef REPORT_RAY_STATS
             .write_storage_image(desc_set, 6, ray_stats)
 #endif
@@ -691,23 +692,15 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pCommandBuffers = &render_cmd_buf;
     CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence));
 
-#ifdef REPORT_RAY_STATS
-    const bool need_readback = true;
-#else
-    const bool need_readback = !native_display || readback_framebuffer;
-#endif
-
-    // Queue the readback copy to start once rendering is done
-    if (need_readback) {
-        submit_info.pCommandBuffers = &readback_cmd_buf;
-        CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
-    }
-
-    // Wait for just the rendering commands to complete and read back the ray tracing
-    // timestamps we recorded
+    // Wait for just the rendering commands to complete
     CHECK_VULKAN(vkWaitForFences(
         device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
 
+    // Queue the tonemap shader
+    submit_info.pCommandBuffers = &tonemap_cmd_buf;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+
+    // Read back the ray tracing timestamps we recorded
     std::array<uint64_t, 2> render_timestamps;
     CHECK_VULKAN(vkGetQueryPoolResults(device->logical_device(),
                                        timing_query_pool,
@@ -720,8 +713,21 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     stats.render_time = static_cast<double>(render_timestamps[1] - render_timestamps[0]) /
                         device->get_timestamp_frequency() * 1e3;
 
-    // Now wait for the device to finish the readback copy as well
+#ifdef REPORT_RAY_STATS
+    const bool need_readback = true;
+#else
+    const bool need_readback = !native_display || readback_framebuffer;
+#endif
+
     if (need_readback) {
+        // Wait for the device to finish all rendering
+        CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+
+        // Queue the readback copy
+        submit_info.pCommandBuffers = &readback_cmd_buf;
+        CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+
+        // Now wait for the device to finish the readback copy as well
         CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
         std::memcpy(img.data(), img_readback_buf->map(), img_readback_buf->size());
         img_readback_buf->unmap();
@@ -756,9 +762,9 @@ void RenderVulkan::build_raytracing_pipeline()
                          VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                          VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
-                1, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                1, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT)
             .add_binding(
-                2, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                2, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT)
             .add_binding(
                 3, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
@@ -819,6 +825,12 @@ void RenderVulkan::build_raytracing_pipeline()
                       .set_recursion_depth(1)
                       .set_layout(pipeline_layout)
                       .build(*device);
+
+    // Load the shader modules for our tonemap pipeline and build the pipeline
+    auto tonemap_shader =
+        std::make_shared<vkrt::ShaderModule>(*device, tonemap_spv, sizeof(tonemap_spv));
+
+    tonemap_pipeline = vkrt::build_compute_pipeline(*device, pipeline_layout, tonemap_shader);
 }
 
 void RenderVulkan::build_shader_descriptor_table()
@@ -867,7 +879,7 @@ void RenderVulkan::build_shader_descriptor_table()
     auto updater = vkrt::DescriptorSetUpdater()
                        .write_acceleration_structure(desc_set, 0, scene_bvh)
                        .write_storage_image(desc_set, 1, render_target)
-                       .write_storage_image(desc_set, 2, accum_buffer)
+                       .write_ssbo(desc_set, 2, accum_buffer)
                        .write_ubo(desc_set, 3, view_param_buf)
                        .write_ssbo(desc_set, 4, mat_params)
                        .write_ssbo(desc_set, 5, light_params);
@@ -1039,20 +1051,35 @@ void RenderVulkan::record_command_buffers()
     vkCmdWriteTimestamp(
         render_cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timing_query_pool, 1);
 
-    // Queue a barrier for rendering to finish
-    vkCmdPipelineBarrier(render_cmd_buf,
-                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                         0,
-                         0,
-                         nullptr,
-                         0,
-                         nullptr,
-                         0,
-                         nullptr);
-
     CHECK_VULKAN(vkEndCommandBuffer(render_cmd_buf));
 
+    // Tonemap
+    CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf, &begin_info));
+
+    vkCmdBindPipeline(
+        tonemap_cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
+
+    vkCmdBindDescriptorSets(tonemap_cmd_buf,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipeline_layout,
+                            0,
+                            descriptor_sets.size(),
+                            descriptor_sets.data(),
+                            0,
+                            nullptr);
+
+    glm::uvec2 dispatch_dim = render_target->dims();
+    glm::uvec2 workgroup_dim(16, 16);
+    dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
+
+    vkCmdDispatch(tonemap_cmd_buf,
+                  dispatch_dim.x,
+                  dispatch_dim.y,
+                  1);
+
+    CHECK_VULKAN(vkEndCommandBuffer(tonemap_cmd_buf));
+
+    // Readback
     CHECK_VULKAN(vkBeginCommandBuffer(readback_cmd_buf, &begin_info));
 
     VkImageSubresourceLayers copy_subresource = {};

@@ -894,4 +894,31 @@ void DescriptorSetUpdater::update(Device &device)
     vkUpdateDescriptorSets(
         device.logical_device(), desc_writes.size(), desc_writes.data(), 0, nullptr);
 }
+
+VkPipeline build_compute_pipeline(Device &device,
+                                  VkPipelineLayout layout,
+                                  const std::shared_ptr<ShaderModule> &shader,
+                                  const std::string &entry_point)
+{
+    VkPipelineShaderStageCreateInfo ss_ci = {};
+    ss_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ss_ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ss_ci.module = shader->module;
+    ss_ci.pName = entry_point.c_str();
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkComputePipelineCreateInfo pipeline_create_info = {};
+    pipeline_create_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeline_create_info.stage = ss_ci;
+    pipeline_create_info.layout = layout;
+    CHECK_VULKAN(vkCreateComputePipelines(device.logical_device(),
+                                          VK_NULL_HANDLE,
+                                          1,
+                                          &pipeline_create_info,
+                                          nullptr,
+                                          &pipeline));
+
+    return pipeline;
+}
+
 }

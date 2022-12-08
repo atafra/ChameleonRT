@@ -26,8 +26,7 @@ struct MaterialParams {
 };
 
 layout(binding = 0, set = 0) uniform accelerationStructureEXT scene;
-layout(binding = 1, set = 0, rgba8) uniform writeonly image2D framebuffer;
-layout(binding = 2, set = 0, rgba32f) uniform image2D accum_buffer;
+layout(binding = 2, set = 0) buffer _accum_buffer { vec4 accum_buffer[]; };
 
 layout(binding = 3, set = 0, std140) uniform ViewParams {
     vec4 cam_pos;
@@ -161,9 +160,9 @@ vec3 sample_direct_light(in const DisneyMaterial mat, in const vec3 hit_p, in co
 
 void main() {
     const ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-    const vec2 dims = vec2(gl_LaunchSizeEXT.xy);
+    const ivec2 dims = ivec2(gl_LaunchSizeEXT.xy);
     LCGRand rng = get_rng(frame_id);
-    vec2 d = (pixel + vec2(lcg_randomf(rng), lcg_randomf(rng))) / dims;
+    vec2 d = (pixel + vec2(lcg_randomf(rng), lcg_randomf(rng))) / vec2(dims);
 
     vec3 ray_origin = cam_pos.xyz;
     vec3 ray_dir = normalize(d.x * cam_du.xyz + d.y * cam_dv.xyz + cam_dir_top_left.xyz);
@@ -226,13 +225,13 @@ void main() {
         }
 	} while (bounce < MAX_PATH_DEPTH);
 
-    vec4 accum_color = imageLoad(accum_buffer, pixel);
+    const uint pixel_index = dims.x * pixel.y + pixel.x;
+    vec4 accum_color = accum_buffer[pixel_index];
 	accum_color = (vec4(illum, 1.0) + frame_id * accum_color) / (frame_id + 1);
-    imageStore(accum_buffer, pixel, accum_color);
+    accum_buffer[pixel_index] = accum_color;
 
     accum_color.xyz = vec3(linear_to_srgb(accum_color.x), linear_to_srgb(accum_color.y),
             linear_to_srgb(accum_color.z));
-    imageStore(framebuffer, pixel, vec4(accum_color.xyz, 1.f));
 
 #ifdef REPORT_RAY_STATS
     imageStore(ray_stats, pixel, uvec4(ray_count));

@@ -23,7 +23,8 @@ struct RenderVulkan : RenderBackend {
 
     std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params;
 
-    std::shared_ptr<vkrt::Texture2D> render_target, accum_buffer;
+    std::shared_ptr<vkrt::Texture2D> render_target;
+    std::shared_ptr<vkrt::Buffer> accum_buffer;
 
 #ifdef REPORT_RAY_STATS
     std::shared_ptr<vkrt::Texture2D> ray_stats;
@@ -44,9 +45,11 @@ struct RenderVulkan : RenderBackend {
 
     VkCommandPool render_cmd_pool = VK_NULL_HANDLE;
     VkCommandBuffer render_cmd_buf = VK_NULL_HANDLE;
+    VkCommandBuffer tonemap_cmd_buf = VK_NULL_HANDLE;
     VkCommandBuffer readback_cmd_buf = VK_NULL_HANDLE;
 
     vkrt::RTPipeline rt_pipeline;
+    VkPipeline tonemap_pipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout desc_layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout textures_desc_layout = VK_NULL_HANDLE;

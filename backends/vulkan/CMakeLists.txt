@@ -15,7 +15,7 @@ if (REPORT_RAY_STATS)
 endif()
 
 add_spirv_embed_library(spv_shaders raygen.rgen miss.rmiss hit.rchit
-    occlusion_miss.rmiss
+    occlusion_miss.rmiss tonemap.comp
 	COMPILE_OPTIONS -O
     INCLUDE_DIRECTORIES
         ${PROJECT_SOURCE_DIR}
