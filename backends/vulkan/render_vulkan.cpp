@@ -1056,6 +1056,22 @@ void RenderVulkan::record_command_buffers()
     // Tonemap
     CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf, &begin_info));
 
+    VkBufferMemoryBarrier buf_barrier{};
+    buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    buf_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    buf_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    buf_barrier.buffer = accum_buffer->handle();
+    buf_barrier.offset = 0;
+    buf_barrier.size = VK_WHOLE_SIZE;
+
+    vkCmdPipelineBarrier(tonemap_cmd_buf,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0,
+                         0, nullptr,
+                         1, &buf_barrier,
+                         0, nullptr);
+
     vkCmdBindPipeline(
         tonemap_cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
 
@@ -1082,6 +1098,31 @@ void RenderVulkan::record_command_buffers()
     // Readback
     CHECK_VULKAN(vkBeginCommandBuffer(readback_cmd_buf, &begin_info));
 
+    VkImageMemoryBarrier img_barrier{};
+    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    img_barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    img_barrier.image = render_target->image_handle();
+    img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    img_barrier.subresourceRange.baseMipLevel = 0;
+    img_barrier.subresourceRange.levelCount = 1;
+    img_barrier.subresourceRange.baseArrayLayer = 0;
+    img_barrier.subresourceRange.layerCount = 1;
+
+    buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
+    buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    buf_barrier.buffer = img_readback_buf->handle();
+
+    vkCmdPipelineBarrier(readback_cmd_buf,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         0, nullptr,
+                         1, &buf_barrier,
+                         1, &img_barrier);
+
     VkImageSubresourceLayers copy_subresource = {};
     copy_subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copy_subresource.mipLevel = 0;
@@ -1106,6 +1147,16 @@ void RenderVulkan::record_command_buffers()
                            img_readback_buf->handle(),
                            1,
                            &img_copy);
+
+    buf_barrier.srcAccessMask = buf_barrier.dstAccessMask;
+    buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(readback_cmd_buf,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0,
+                         0, nullptr,
+                         1, &buf_barrier,
+                         0, 0);
 
 #ifdef REPORT_RAY_STATS
     img_copy.bufferOffset = 0;
