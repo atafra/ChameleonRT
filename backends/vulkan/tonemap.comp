@@ -3,7 +3,12 @@
 #include "util.glsl"
 
 layout(binding = 1, set = 0, rgba8) uniform writeonly image2D framebuffer;
-layout(binding = 2, set = 0) buffer _accum_buffer { vec4 accum_buffer[]; };
+
+#ifdef ENABLE_OIDN
+layout(binding = 7, set = 0) buffer ColorBuffer { vec4 color_buffer[]; }; // denoise_buffer
+#else
+layout(binding = 2, set = 0) buffer ColorBuffer { vec4 color_buffer[]; }; // accum_buffer
+#endif
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -14,8 +19,8 @@ void main() {
     return;
 
   const uint pixel_index = dims.x * pixel.y + pixel.x;
-  vec4 accum_color = accum_buffer[pixel_index];
-  accum_color.xyz = vec3(linear_to_srgb(accum_color.x), linear_to_srgb(accum_color.y),
-          linear_to_srgb(accum_color.z));
-  imageStore(framebuffer, pixel, vec4(accum_color.xyz, 1.f));
+  vec4 color = color_buffer[pixel_index];
+  color.xyz = vec3(linear_to_srgb(color.x), linear_to_srgb(color.y),
+          linear_to_srgb(color.z));
+  imageStore(framebuffer, pixel, vec4(color.xyz, 1.f));
 }

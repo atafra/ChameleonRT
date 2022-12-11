@@ -4,6 +4,9 @@
 #include <memory>
 #include <unordered_map>
 #include <vulkan/vulkan.h>
+#ifdef ENABLE_OIDN
+#include <OpenImageDenoise/oidn.hpp>
+#endif
 #include "render_backend.h"
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
@@ -25,6 +28,12 @@ struct RenderVulkan : RenderBackend {
 
     std::shared_ptr<vkrt::Texture2D> render_target;
     std::shared_ptr<vkrt::Buffer> accum_buffer;
+
+#ifdef ENABLE_OIDN
+    std::shared_ptr<vkrt::Buffer> denoise_buffer;
+    oidn::DeviceRef oidn_device;
+    oidn::FilterRef oidn_filter;
+#endif
 
 #ifdef REPORT_RAY_STATS
     std::shared_ptr<vkrt::Texture2D> ray_stats;

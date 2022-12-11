@@ -23,6 +23,14 @@ struct RayPayload {
     float pad;
 };
 
+struct AccumPixel {
+	vec4 color;
+#ifdef ENABLE_OIDN
+	vec4 albedo;
+	vec4 normal;
+#endif
+};
+
 float linear_to_srgb(float x) {
 	if (x <= 0.0031308f) {
 		return 12.92f * x;

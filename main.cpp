@@ -333,6 +333,9 @@ void run_app(const std::vector<std::string> &args,
         ImGui::Text("GPU: %s", gpu_brand.c_str());
         ImGui::Text("Accumulated Frames: %llu", frame_id);
         ImGui::Text("Display Frontend: %s", display_frontend.c_str());
+    #ifdef ENABLE_OIDN
+        ImGui::Text("Denoiser: Intel(R) Open Image Denoise");
+    #endif
         ImGui::Text("%s", scene_info.c_str());
 
         if (ImGui::Button("Save Image")) {

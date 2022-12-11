@@ -84,6 +84,32 @@ std::string RenderVulkan::name()
 
 void RenderVulkan::initialize(const int fb_width, const int fb_height)
 {
+#ifdef ENABLE_OIDN
+    // Initialize the denoiser device
+    oidn_device = oidn::newDevice();
+    oidn_device.commit();
+    if (oidn_device.getError() != oidn::Error::None)
+        throw std::runtime_error("Failed to initialize OIDN device.");
+
+    // Find a compatible external memory handle type
+    const auto oidn_external_mem_types = oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
+    oidn::ExternalMemoryTypeFlag oidn_external_mem_type;
+    VkExternalMemoryHandleTypeFlagBits external_mem_type;
+
+    if (oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueFD) {
+        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::OpaqueFD;
+        external_mem_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    } else if (oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::DMABuf) {
+        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::DMABuf;
+        external_mem_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    } else if (oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueWin32) {
+        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::OpaqueWin32;
+        external_mem_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    } else {
+        throw std::runtime_error("failed to find compatible external memory type");
+    }
+#endif
+
     frame_id = 0;
     img.resize(fb_width * fb_height);
 
@@ -93,9 +119,23 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                 VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
+#ifdef ENABLE_OIDN
+    accum_buffer = vkrt::Buffer::device(*device,
+                                        3 * sizeof(glm::vec4) * fb_width * fb_height,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        0,
+                                        external_mem_type);
+
+    denoise_buffer = vkrt::Buffer::device(*device,
+                                          sizeof(glm::vec4) * fb_width * fb_height,
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                          0,
+                                          external_mem_type);
+#else
     accum_buffer = vkrt::Buffer::device(*device,
                                         sizeof(glm::vec4) * fb_width * fb_height,
                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+#endif
 
     img_readback_buf = vkrt::Buffer::host(
         *device, img.size() * render_target->pixel_size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -176,10 +216,50 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 #ifdef REPORT_RAY_STATS
             .write_storage_image(desc_set, 6, ray_stats)
 #endif
+#ifdef ENABLE_OIDN
+            .write_ssbo(desc_set, 7, denoise_buffer)
+#endif
             .update(*device);
 
         record_command_buffers();
     }
+
+#ifdef ENABLE_OIDN
+    {
+        // Initialize the denoiser filter
+        oidn_filter = oidn_device.newFilter("RT");
+
+        auto input_buffer  = oidn_device.newBuffer(oidn_external_mem_type,
+                                                   accum_buffer->external_mem_handle(external_mem_type),
+                                                #ifdef _WIN32
+                                                   nullptr,
+                                                #endif
+                                                   accum_buffer->size());
+
+        auto output_buffer = oidn_device.newBuffer(oidn_external_mem_type,
+                                                   denoise_buffer->external_mem_handle(external_mem_type),
+                                                #ifdef _WIN32
+                                                   nullptr,
+                                                #endif
+                                                   denoise_buffer->size());
+
+        oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("albedo", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             1 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("normal", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             2 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+
+        oidn_filter.setImage("output", output_buffer, oidn::Format::Float3, fb_width, fb_height,
+                             0, sizeof(glm::vec4));
+
+        oidn_filter.set("hdr", true);
+        
+        oidn_filter.commit();
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to initialize OIDN filter.");
+    }
+#endif
 }
 
 void RenderVulkan::set_scene(const Scene &scene)
@@ -696,6 +776,11 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     CHECK_VULKAN(vkWaitForFences(
         device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
 
+#ifdef ENABLE_OIDN
+    // Denoise the frame
+    oidn_filter.execute();
+#endif
+
     // Queue the tonemap shader
     submit_info.pCommandBuffers = &tonemap_cmd_buf;
     CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
@@ -775,6 +860,10 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
 #endif
+#ifdef ENABLE_OIDN
+            .add_binding(
+                7, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+#endif
             .build(*device);
 
     const size_t total_geom =
@@ -837,9 +926,9 @@ void RenderVulkan::build_shader_descriptor_table()
 {
     const std::vector<VkDescriptorPoolSize> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                              std::max(uint32_t(textures.size()), uint32_t(1))}};
 
@@ -885,6 +974,9 @@ void RenderVulkan::build_shader_descriptor_table()
                        .write_ssbo(desc_set, 5, light_params);
 #ifdef REPORT_RAY_STATS
     updater.write_storage_image(desc_set, 6, ray_stats);
+#endif
+#ifdef ENABLE_OIDN
+    updater.write_ssbo(desc_set, 7, denoise_buffer);
 #endif
 
     if (!combined_samplers.empty()) {
@@ -1051,26 +1143,26 @@ void RenderVulkan::record_command_buffers()
     vkCmdWriteTimestamp(
         render_cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timing_query_pool, 1);
 
-    CHECK_VULKAN(vkEndCommandBuffer(render_cmd_buf));
-
-    // Tonemap
-    CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf, &begin_info));
-
     VkBufferMemoryBarrier buf_barrier{};
     buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     buf_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    buf_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    buf_barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     buf_barrier.buffer = accum_buffer->handle();
     buf_barrier.offset = 0;
     buf_barrier.size = VK_WHOLE_SIZE;
 
-    vkCmdPipelineBarrier(tonemap_cmd_buf,
+    vkCmdPipelineBarrier(render_cmd_buf,
                          VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          0,
                          0, nullptr,
                          1, &buf_barrier,
                          0, nullptr);
+
+    CHECK_VULKAN(vkEndCommandBuffer(render_cmd_buf));
+
+    // Tonemap
+    CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf, &begin_info));
 
     vkCmdBindPipeline(
         tonemap_cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);

@@ -13,6 +13,9 @@ set(GLSL_COMPILE_DEFNS "")
 if (REPORT_RAY_STATS)
 	set(GLSL_COMPILE_DEFNS "REPORT_RAY_STATS=1")
 endif()
+if(ENABLE_OIDN)
+    list(APPEND GLSL_COMPILE_DEFNS "ENABLE_OIDN=1")
+endif()
 
 add_spirv_embed_library(spv_shaders raygen.rgen miss.rmiss hit.rchit
     occlusion_miss.rmiss tonemap.comp
