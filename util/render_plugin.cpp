@@ -31,7 +31,7 @@ RenderPlugin::RenderPlugin(const std::string &plugin_name) : name(plugin_name)
         LocalFree(msg_buf);
     }
 #else
-    plugin = dlopen(plugin_file_name.c_str(), RTLD_LAZY);
+    plugin = dlopen(("./" + plugin_file_name).c_str(), RTLD_LAZY);
     if (!plugin) {
         error_msg = dlerror();
     }
