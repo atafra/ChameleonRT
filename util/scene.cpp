@@ -68,7 +68,7 @@ Scene::Scene(const std::string &fname)
 size_t Scene::unique_tris() const
 {
     return std::accumulate(
-        meshes.begin(), meshes.end(), 0, [](const size_t &n, const Mesh &m) {
+        meshes.begin(), meshes.end(), size_t(0), [](const size_t &n, const Mesh &m) {
             return n + m.num_tris();
         });
 }
@@ -76,7 +76,7 @@ size_t Scene::unique_tris() const
 size_t Scene::total_tris() const
 {
     return std::accumulate(
-        instances.begin(), instances.end(), 0, [&](const size_t &n, const Instance &i) {
+        instances.begin(), instances.end(), size_t(0), [&](const size_t &n, const Instance &i) {
             return n +
                    meshes[parameterized_meshes[i.parameterized_mesh_id].mesh_id].num_tris();
         });
@@ -85,7 +85,7 @@ size_t Scene::total_tris() const
 size_t Scene::num_geometries() const
 {
     return std::accumulate(
-        meshes.begin(), meshes.end(), 0, [](const size_t &n, const Mesh &m) {
+        meshes.begin(), meshes.end(), size_t(0), [](const size_t &n, const Mesh &m) {
             return n + m.geometries.size();
         });
 }

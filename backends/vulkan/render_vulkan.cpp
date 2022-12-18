@@ -869,7 +869,7 @@ void RenderVulkan::build_raytracing_pipeline()
     const size_t total_geom =
         std::accumulate(meshes.begin(),
                         meshes.end(),
-                        0,
+                        size_t(0),
                         [](size_t n, const std::unique_ptr<vkrt::TriangleMesh> &t) {
                             return n + t->geometries.size();
                         });

@@ -12,7 +12,7 @@ Mesh::Mesh(const std::vector<Geometry> &geometries) : geometries(geometries) {}
 size_t Mesh::num_tris() const
 {
     return std::accumulate(
-        geometries.begin(), geometries.end(), 0, [](const size_t &n, const Geometry &g) {
+        geometries.begin(), geometries.end(), size_t(0), [](const size_t &n, const Geometry &g) {
             return n + g.num_tris();
         });
 }
