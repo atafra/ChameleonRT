@@ -866,6 +866,7 @@ void RenderVulkan::build_raytracing_pipeline()
 #endif
             .build(*device);
 
+    /*
     const size_t total_geom =
         std::accumulate(meshes.begin(),
                         meshes.end(),
@@ -873,6 +874,7 @@ void RenderVulkan::build_raytracing_pipeline()
                         [](size_t n, const std::unique_ptr<vkrt::TriangleMesh> &t) {
                             return n + t->geometries.size();
                         });
+    */
 
     textures_desc_layout =
         vkrt::DescriptorSetLayoutBuilder()
@@ -1015,7 +1017,7 @@ void RenderVulkan::build_shader_binding_table()
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id]->geometries.size(); ++j) {
-            auto &geom = meshes[pm.mesh_id]->geometries[j];
+            //auto &geom = meshes[pm.mesh_id]->geometries[j];
             const std::string hg_name =
                 "HitGroup_param_mesh" + std::to_string(i) + "_geom" + std::to_string(j);
 

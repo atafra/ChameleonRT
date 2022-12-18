@@ -83,7 +83,7 @@ std::string get_cpu_brand()
 #else
     __cpuid(0x80000000, regs[0], regs[1], regs[2], regs[3]);
 #endif
-    if (regs[0] >= 0x80000004) {
+    if (static_cast<unsigned int>(regs[0]) >= 0x80000004) {
         char b[64] = {0};
         for (int i = 0; i < 3; ++i) {
 #ifdef _WIN32

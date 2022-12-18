@@ -117,7 +117,7 @@ Device::Device(Device &&d)
       queue(d.queue),
       mem_props(d.mem_props),
       as_props(d.as_props),
-      rt_pipeline_props(rt_pipeline_props)
+      rt_pipeline_props(d.rt_pipeline_props)
 {
     d.vk_instance = VK_NULL_HANDLE;
     d.vk_physical_device = VK_NULL_HANDLE;

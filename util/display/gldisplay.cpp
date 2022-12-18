@@ -56,7 +56,7 @@ GLDisplay::GLDisplay(SDL_Window *win)
 GLDisplay::~GLDisplay()
 {
     glDeleteVertexArrays(1, &vao);
-    if (render_texture != -1) {
+    if (render_texture != GLuint(-1)) {
         glDeleteTextures(1, &render_texture);
     }
     ImGui_ImplOpenGL3_Shutdown();
@@ -76,7 +76,7 @@ std::string GLDisplay::name()
 void GLDisplay::resize(const int fb_width, const int fb_height)
 {
     fb_dims = glm::uvec2(fb_width, fb_height);
-    if (render_texture != -1) {
+    if (render_texture != GLuint(-1)) {
         glDeleteTextures(1, &render_texture);
     }
     glGenTextures(1, &render_texture);

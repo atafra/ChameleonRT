@@ -30,7 +30,7 @@ Geometry::Geometry(std::shared_ptr<Buffer> verts,
     geom_desc.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
     geom_desc.geometry.triangles.indexData.deviceAddress = index_buf->device_address();
 
-    geom_desc.geometry.triangles.transformData.deviceAddress = NULL;
+    geom_desc.geometry.triangles.transformData.deviceAddress = 0;
 }
 
 uint32_t Geometry::num_vertices() const

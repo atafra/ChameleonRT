@@ -202,7 +202,7 @@ void Scene::load_obj(const std::string &file)
             const int32_t id = texture_ids[m.diffuse_texname];
             uint32_t tex_mask = TEXTURED_PARAM_MASK;
             SET_TEXTURE_ID(tex_mask, id);
-            d.base_color.r = *reinterpret_cast<float *>(&tex_mask);
+            std::memcpy(&d.base_color.r, &tex_mask, sizeof(tex_mask));
         }
         materials.push_back(d);
     }
@@ -355,7 +355,7 @@ void Scene::load_gltf(const std::string &fname)
 
             uint32_t tex_mask = TEXTURED_PARAM_MASK;
             SET_TEXTURE_ID(tex_mask, id);
-            mat.base_color.r = *reinterpret_cast<float *>(&tex_mask);
+            std::memcpy(&mat.base_color.r, &tex_mask, sizeof(tex_mask));
         }
         // glTF: metallic is blue channel, roughness is green channel
         if (m.pbrMetallicRoughness.metallicRoughnessTexture.index != -1) {
@@ -366,12 +366,12 @@ void Scene::load_gltf(const std::string &fname)
             uint32_t tex_mask = TEXTURED_PARAM_MASK;
             SET_TEXTURE_ID(tex_mask, id);
             SET_TEXTURE_CHANNEL(tex_mask, 2);
-            mat.metallic = *reinterpret_cast<float *>(&tex_mask);
+            std::memcpy(&mat.metallic, &tex_mask, sizeof(tex_mask));
 
             tex_mask = TEXTURED_PARAM_MASK;
             SET_TEXTURE_ID(tex_mask, id);
             SET_TEXTURE_CHANNEL(tex_mask, 1);
-            mat.roughness = *reinterpret_cast<float *>(&tex_mask);
+            std::memcpy(&mat.roughness, &tex_mask, sizeof(tex_mask));
         }
         materials.push_back(mat);
     }
@@ -508,7 +508,7 @@ void Scene::load_crts(const std::string &file)
             const int32_t id = m["base_color_texture"].get<int32_t>();
             uint32_t tex_mask = TEXTURED_PARAM_MASK;
             SET_TEXTURE_ID(tex_mask, id);
-            mat.base_color.r = *reinterpret_cast<float *>(&tex_mask);
+            std::memcpy(&mat.base_color.r, &tex_mask, sizeof(tex_mask));
         }
 
         auto parse_float_param = [&](const std::string &param, float &val) {
@@ -520,7 +520,7 @@ void Scene::load_crts(const std::string &file)
                 uint32_t tex_mask = TEXTURED_PARAM_MASK;
                 SET_TEXTURE_ID(tex_mask, id);
                 SET_TEXTURE_CHANNEL(tex_mask, channel);
-                val = *reinterpret_cast<float *>(&tex_mask);
+                std::memcpy(&val, &tex_mask, sizeof(tex_mask));
             }
         };
 
@@ -932,7 +932,7 @@ void Scene::validate_materials()
         materials.push_back(DisneyMaterial());
         for (auto &i : parameterized_meshes) {
             for (auto &m : i.material_ids) {
-                if (m == -1) {
+                if (m == (unsigned int)-1) {
                     m = default_mat_id;
                 }
             }
