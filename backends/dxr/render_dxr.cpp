@@ -76,11 +76,10 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                            DXGI_FORMAT_R8G8B8A8_UNORM,
                                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-    accum_buffer = dxr::Texture2D::device(device.Get(),
-                                          glm::uvec2(fb_width, fb_height),
-                                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                          DXGI_FORMAT_R32G32B32A32_FLOAT,
-                                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    accum_buffer = dxr::Buffer::device(device.Get(),
+                                       sizeof(glm::vec4) * fb_width * fb_height,
+                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     // Allocate the readback buffer so we can read the image back to the CPU
     img_readback_buf = dxr::Buffer::readback(device.Get(),
@@ -786,9 +785,18 @@ void RenderDXR::build_descriptor_heap()
         device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // Accum buffer
-    device->CreateUnorderedAccessView(accum_buffer.get(), nullptr, &uav_desc, heap_handle);
-    heap_handle.ptr +=
-        device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
+        uav_desc.Format = DXGI_FORMAT_UNKNOWN;
+        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uav_desc.Buffer.FirstElement = 0;
+        uav_desc.Buffer.StructureByteStride = sizeof(glm::vec4);
+        uav_desc.Buffer.NumElements = accum_buffer.size() / uav_desc.Buffer.StructureByteStride;
+        uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        device->CreateUnorderedAccessView(accum_buffer.get(), nullptr, &uav_desc, heap_handle);
+        heap_handle.ptr +=
+            device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
 
 #ifdef REPORT_RAY_STATS
     // Ray stats buffer

@@ -20,7 +20,8 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer view_param_buf, img_readback_buf, instance_buf, material_param_buf, light_buf,
         ray_stats_readback_buf;
 
-    dxr::Texture2D render_target, accum_buffer, ray_stats;
+    dxr::Texture2D render_target, ray_stats;
+    dxr::Buffer accum_buffer;
     std::vector<dxr::Texture2D> textures;
 
     std::vector<dxr::BottomLevelBVH> meshes;

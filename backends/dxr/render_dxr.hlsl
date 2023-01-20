@@ -27,7 +27,7 @@ struct MaterialParams {
 RWTexture2D<float4> output : register(u0);
 
 // Accumulation buffer for progressive refinement
-RWTexture2D<float4> accum_buffer : register(u1);
+RWStructuredBuffer<AccumPixel> accum_buffer : register(u1);
 
 #ifdef REPORT_RAY_STATS
 RWTexture2D<uint> ray_stats : register(u2);
@@ -169,9 +169,9 @@ float3 sample_direct_light(in const DisneyMaterial mat, in const float3 hit_p, i
 [shader("raygeneration")] 
 void RayGen() {
     const uint2 pixel = DispatchRaysIndex().xy;
-    const float2 dims = float2(DispatchRaysDimensions().xy);
+    const uint2 dims = DispatchRaysDimensions().xy;
     LCGRand rng = get_rng(frame_id);
-    const float2 d = (pixel + float2(lcg_randomf(rng), lcg_randomf(rng))) / dims;
+    const float2 d = (pixel + float2(lcg_randomf(rng), lcg_randomf(rng))) / float2(dims);
 
     RayDesc ray;
     ray.Origin = cam_pos.xyz;
@@ -237,8 +237,9 @@ void RayGen() {
         }
     } while (bounce < MAX_PATH_DEPTH);
 
-    const float4 accum_color = (float4(illum, 1.0) + frame_id * accum_buffer[pixel]) / (frame_id + 1);
-    accum_buffer[pixel] = accum_color;
+    const uint pixel_index = dims.x * pixel.y + pixel.x;
+    const float4 accum_color = (float4(illum, 1.0) + frame_id * accum_buffer[pixel_index].color) / (frame_id + 1);
+    accum_buffer[pixel_index].color = accum_color;
 
     output[pixel] = float4(linear_to_srgb(accum_color.r),
             linear_to_srgb(accum_color.g),
