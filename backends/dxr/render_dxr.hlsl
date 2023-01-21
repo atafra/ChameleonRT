@@ -23,9 +23,6 @@ struct MaterialParams {
     float2 pad;
 };
 
-// Raytracing output texture, accessed as a UAV
-RWTexture2D<float4> output : register(u0);
-
 // Accumulation buffer for progressive refinement
 RWStructuredBuffer<AccumPixel> accum_buffer : register(u1);
 
@@ -240,10 +237,6 @@ void RayGen() {
     const uint pixel_index = dims.x * pixel.y + pixel.x;
     const float4 accum_color = (float4(illum, 1.0) + frame_id * accum_buffer[pixel_index].color) / (frame_id + 1);
     accum_buffer[pixel_index].color = accum_color;
-
-    output[pixel] = float4(linear_to_srgb(accum_color.r),
-            linear_to_srgb(accum_color.g),
-            linear_to_srgb(accum_color.b), 1.f);
 
 #ifdef REPORT_RAY_STATS
     ray_stats[pixel] = ray_count;

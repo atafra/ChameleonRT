@@ -24,10 +24,18 @@ endif()
 
 add_dxil_embed_library(dxr_shaders render_dxr.hlsl util.hlsl
 	disney_bsdf.hlsl lcg_rng.hlsl
-	COMPILE_OPTIONS -O3
+	COMPILE_OPTIONS -T lib_6_3 -O3
 	COMPILE_DEFINITIONS
         ${HLSL_COMPILE_DEFNS}
 	INCLUDE_DIRECTORIES
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${PROJECT_SOURCE_DIR})
+
+add_dxil_embed_library(tonemap_shader tonemap.hlsl util.hlsl
+    COMPILE_OPTIONS -T cs_5_0 -O3
+    COMPILE_DEFINITIONS
+        ${HLSL_COMPILE_DEFNS}
+    INCLUDE_DIRECTORIES
         ${CMAKE_CURRENT_LIST_DIR}
         ${PROJECT_SOURCE_DIR})
 
@@ -53,6 +61,7 @@ target_include_directories(crt_dxr PUBLIC
 
 target_link_libraries(crt_dxr PUBLIC
 	dxr_shaders
+    tonemap_shader
     util
     display
     ${D3D12_LIBRARIES})

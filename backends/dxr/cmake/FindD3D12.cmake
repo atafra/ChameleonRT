@@ -84,7 +84,7 @@ function(add_dxil_embed_library)
 	set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.h")
 	add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
         COMMAND ${D3D12_SHADER_COMPILER} ${MAIN_SHADER}
-		-T lib_6_3 -Fh ${DXIL_EMBED_FILE} -Vn ${FNAME}_dxil
+		-Fh ${DXIL_EMBED_FILE} -Vn ${FNAME}_dxil
 		${HLSL_INCLUDE_DIRS} ${HLSL_COMPILE_DEFNS} ${DXIL_COMPILE_OPTIONS}
 		DEPENDS ${HLSL_SRCS}
 		COMMENT "Compiling and embedding ${MAIN_SHADER} as ${FNAME}_dxil")

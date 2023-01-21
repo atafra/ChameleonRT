@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include "render_dxr_embedded_dxil.h"
+#include "tonemap_embedded_dxil.h"
 #include "util.h"
 #include <glm/ext.hpp>
 
@@ -641,6 +642,19 @@ void RenderDXR::build_raytracing_pipeline()
     rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_root_sig);
 
     rt_pipeline = rt_pipeline_builder.create(device.Get());
+
+    // Tonemap
+    tonemap_root_sig =
+        dxr::RootSignatureBuilder::global()
+            .add_desc_heap("cbv_srv_uav_heap", raygen_desc_heap)
+            .create(device.Get());
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC tonemap_pso = {};
+    tonemap_pso.pRootSignature = tonemap_root_sig.get();
+    tonemap_pso.CS.pShaderBytecode = tonemap_dxil;
+    tonemap_pso.CS.BytecodeLength = sizeof(tonemap_dxil);
+    tonemap_pso.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    CHECK_ERR(device->CreateComputePipelineState(&tonemap_pso, IID_PPV_ARGS(&tonemap_ps)));
 }
 
 void RenderDXR::build_shader_resource_heap()
@@ -885,7 +899,7 @@ void RenderDXR::record_command_lists()
     CHECK_ERR(render_cmd_allocator->Reset());
     CHECK_ERR(render_cmd_list->Reset(render_cmd_allocator.Get(), nullptr));
 
-    // TODO: We'll need a second desc. heap for the sampler and bind both of them here
+   // TODO: We'll need a second desc. heap for the sampler and bind both of them here
     std::array<ID3D12DescriptorHeap *, 2> desc_heaps = {raygen_desc_heap.get(),
                                                         raygen_sampler_heap.get()};
     render_cmd_list->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
@@ -905,6 +919,18 @@ void RenderDXR::record_command_lists()
                                       2,
                                       query_resolve_buffer.get(),
                                       0);
+                                      
+    D3D12_RESOURCE_BARRIER barrier = barrier_uav(accum_buffer);
+    render_cmd_list->ResourceBarrier(1, &barrier);
+
+    render_cmd_list->SetPipelineState(tonemap_ps.Get());
+    render_cmd_list->SetComputeRootSignature(tonemap_root_sig.get());
+    render_cmd_list->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
+
+    glm::uvec2 dispatch_dim = render_target.dims();
+    glm::uvec2 workgroup_dim(16, 16);
+    dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
+    render_cmd_list->Dispatch(dispatch_dim.x, dispatch_dim.y, 1);
 
     CHECK_ERR(render_cmd_list->Close());
 
