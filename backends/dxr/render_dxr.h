@@ -3,6 +3,9 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl.h>
+#ifdef ENABLE_OIDN
+#include <OpenImageDenoise/oidn.hpp>
+#endif
 #include "dx12_utils.h"
 #include "dxr_utils.h"
 #include "render_backend.h"
@@ -15,7 +18,7 @@ struct RenderDXR : RenderBackend {
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> cmd_list;
 
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> render_cmd_allocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> render_cmd_list, readback_cmd_list;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> render_cmd_list, tonemap_cmd_list, readback_cmd_list;
 
     dxr::Buffer view_param_buf, img_readback_buf, instance_buf, material_param_buf, light_buf,
         ray_stats_readback_buf;
@@ -45,6 +48,12 @@ struct RenderDXR : RenderBackend {
     // Query pool to measure just dispatch rays perf
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> timing_query_heap;
     dxr::Buffer query_resolve_buffer;
+
+#ifdef ENABLE_OIDN
+    dxr::Buffer denoise_buffer;
+    oidn::DeviceRef oidn_device;
+    oidn::FilterRef oidn_filter;
+#endif
 
 #ifdef REPORT_RAY_STATS
     std::vector<uint16_t> ray_counts;

@@ -2,7 +2,11 @@
 
 RWTexture2D<float4> framebuffer : register(u0);
 
+#ifdef ENABLE_OIDN
+RWStructuredBuffer<float4> color_buffer : register(u2);
+#else
 RWStructuredBuffer<float4> color_buffer : register(u1);
+#endif
 
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID) {

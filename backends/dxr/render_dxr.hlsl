@@ -27,7 +27,11 @@ struct MaterialParams {
 RWStructuredBuffer<AccumPixel> accum_buffer : register(u1);
 
 #ifdef REPORT_RAY_STATS
+#ifdef ENABLE_OIDN
+RWTexture2D<uint> ray_stats : register(u3);
+#else
 RWTexture2D<uint> ray_stats : register(u2);
+#endif
 #endif
 
 // View params buffer
@@ -182,6 +186,12 @@ void RayGen() {
     int bounce = 0;
     float3 illum = float3(0, 0, 0);
     float3 path_throughput = float3(1, 1, 1);
+
+#ifdef ENABLE_OIDN
+    float3 first_albedo = float3(0, 0, 0);
+    float3 first_normal = float3(0, 0, 0);
+#endif
+
     do {
         HitInfo payload;
         payload.color_dist = float4(0, 0, 0, -1);
@@ -193,6 +203,11 @@ void RayGen() {
         // If we hit nothing, include the scene background color from the miss shader
         if (payload.color_dist.w <= 0) {
             illum += path_throughput * payload.color_dist.rgb;
+#ifdef ENABLE_OIDN
+            if (bounce == 0) {
+                first_albedo = payload.color_dist.rgb;
+            }
+#endif
             break;
         }
 
@@ -207,6 +222,13 @@ void RayGen() {
             v_z = -v_z;
         }
         ortho_basis(v_x, v_y, v_z);
+
+#ifdef ENABLE_OIDN
+        if (bounce == 0) {
+            first_albedo = mat.base_color;
+            first_normal = v_z;
+        }
+#endif
 
         illum += path_throughput * sample_direct_light(mat, hit_p, v_z, v_x, v_y, w_o, ray_count, rng);
 
@@ -235,8 +257,15 @@ void RayGen() {
     } while (bounce < MAX_PATH_DEPTH);
 
     const uint pixel_index = dims.x * pixel.y + pixel.x;
+
     const float4 accum_color = (float4(illum, 1.0) + frame_id * accum_buffer[pixel_index].color) / (frame_id + 1);
     accum_buffer[pixel_index].color = accum_color;
+#ifdef ENABLE_OIDN
+    const float4 accum_albedo = (float4(first_albedo, 1.0) + frame_id * accum_buffer[pixel_index].albedo) / (frame_id + 1);
+    accum_buffer[pixel_index].albedo = accum_albedo;
+    const float4 accum_normal = (float4(first_normal, 1.0) + frame_id * accum_buffer[pixel_index].normal) / (frame_id + 1);
+    accum_buffer[pixel_index].normal = accum_normal;
+#endif
 
 #ifdef REPORT_RAY_STATS
     ray_stats[pixel] = ray_count;

@@ -21,6 +21,9 @@ set(HLSL_COMPILE_DEFNS "")
 if (REPORT_RAY_STATS)
 	set(HLSL_COMPILE_DEFNS "REPORT_RAY_STATS=1")
 endif()
+if(ENABLE_OIDN)
+    list(APPEND HLSL_COMPILE_DEFNS "ENABLE_OIDN=1")
+endif()
 
 add_dxil_embed_library(dxr_shaders render_dxr.hlsl util.hlsl
 	disney_bsdf.hlsl lcg_rng.hlsl

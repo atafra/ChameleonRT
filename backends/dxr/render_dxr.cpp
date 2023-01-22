@@ -68,6 +68,19 @@ std::string RenderDXR::name()
 
 void RenderDXR::initialize(const int fb_width, const int fb_height)
 {
+#ifdef ENABLE_OIDN
+    // Initialize the denoiser device
+    oidn_device = oidn::newDevice();
+    oidn_device.commit();
+    if (oidn_device.getError() != oidn::Error::None)
+        throw std::runtime_error("Failed to initialize OIDN device.");
+
+    // Find a compatible external memory handle type
+    const auto oidn_external_mem_types = oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
+    if (!(oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueWin32))
+        throw std::runtime_error("failed to find compatible external memory type");
+#endif
+
     frame_id = 0;
     img.resize(fb_width * fb_height);
 
@@ -77,10 +90,24 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                            DXGI_FORMAT_R8G8B8A8_UNORM,
                                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
+#ifdef ENABLE_OIDN
     accum_buffer = dxr::Buffer::device(device.Get(),
-                                       sizeof(glm::vec4) * fb_width * fb_height,
+                                       3 * sizeof(glm::vec4) * fb_width * fb_height,
                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                       D3D12_HEAP_FLAG_SHARED);
+
+    denoise_buffer = dxr::Buffer::device(device.Get(),
+                                         sizeof(glm::vec4) * fb_width * fb_height,
+                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                         D3D12_HEAP_FLAG_SHARED);
+#else
+     accum_buffer = dxr::Buffer::device(device.Get(),
+                                        sizeof(glm::vec4) * fb_width * fb_height,
+                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+#endif
 
     // Allocate the readback buffer so we can read the image back to the CPU
     img_readback_buf = dxr::Buffer::readback(device.Get(),
@@ -104,6 +131,49 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
         build_descriptor_heap();
         record_command_lists();
     }
+
+#ifdef ENABLE_OIDN
+    {
+        // Initialize the denoiser filter
+        oidn_filter = oidn_device.newFilter("RT");
+
+        HANDLE accum_buffer_handle = nullptr;
+        CHECK_ERR(device->CreateSharedHandle(
+                    accum_buffer.get(),
+                    nullptr,
+                    GENERIC_ALL,
+                    nullptr,
+                    &accum_buffer_handle));
+        auto input_buffer = oidn_device.newBuffer(oidn::ExternalMemoryTypeFlag::OpaqueWin32,
+                                                  accum_buffer_handle, nullptr, accum_buffer.size());
+
+        HANDLE denoise_buffer_handle = nullptr;
+        CHECK_ERR(device->CreateSharedHandle(
+                    denoise_buffer.get(),
+                    nullptr,
+                    GENERIC_ALL,
+                    nullptr,
+                    &denoise_buffer_handle));
+        auto output_buffer = oidn_device.newBuffer(oidn::ExternalMemoryTypeFlag::OpaqueWin32,
+                                                   denoise_buffer_handle, nullptr, denoise_buffer.size());
+
+        oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("albedo", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             1 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("normal", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             2 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+
+        oidn_filter.setImage("output", output_buffer, oidn::Format::Float3, fb_width, fb_height,
+                             0, sizeof(glm::vec4));
+
+        oidn_filter.set("hdr", true);
+        
+        oidn_filter.commit();
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to initialize OIDN filter.");
+    }
+#endif
 }
 
 void RenderDXR::set_scene(const Scene &scene)
@@ -432,11 +502,21 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     auto start = high_resolution_clock::now();
     ID3D12CommandList *render_cmds = render_cmd_list.Get();
     cmd_queue->ExecuteCommandLists(1, &render_cmds);
+    sync_gpu();
 
-    // Signal specifically on the completion of the ray tracing work so we can time it
-    // separately from the image readback
-    const uint64_t render_signal_val = fence_value++;
-    CHECK_ERR(cmd_queue->Signal(fence.Get(), render_signal_val));
+    auto end = high_resolution_clock::now();
+    stats.render_time = duration_cast<nanoseconds>(end - start).count() * 1.0e-6;
+
+#ifdef ENABLE_OIDN
+    // Denoise the frame
+    oidn_filter.execute();
+#endif
+
+    // Tonemap the frame
+    {
+        ID3D12CommandList *tonemap_cmds = tonemap_cmd_list.Get();
+        cmd_queue->ExecuteCommandLists(1, &tonemap_cmds);
+    }
 
 #ifdef REPORT_RAY_STATS
     const bool need_readback = true;
@@ -448,13 +528,6 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         ID3D12CommandList *readback_cmds = readback_cmd_list.Get();
         cmd_queue->ExecuteCommandLists(1, &readback_cmds);
     }
-
-    if (fence->GetCompletedValue() < render_signal_val) {
-        CHECK_ERR(fence->SetEventOnCompletion(render_signal_val, fence_evt));
-        WaitForSingleObject(fence_evt, INFINITE);
-    }
-    auto end = high_resolution_clock::now();
-    stats.render_time = duration_cast<nanoseconds>(end - start).count() * 1.0e-6;
 
     // Wait for the image readback commands to complete as well
     sync_gpu();
@@ -553,6 +626,13 @@ void RenderDXR::create_device_objects()
                                         nullptr,
                                         IID_PPV_ARGS(&render_cmd_list)));
     CHECK_ERR(render_cmd_list->Close());
+
+    CHECK_ERR(device->CreateCommandList(0,
+                                        D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                        cmd_allocator.Get(),
+                                        nullptr,
+                                        IID_PPV_ARGS(&tonemap_cmd_list)));
+    CHECK_ERR(tonemap_cmd_list->Close());
 
     CHECK_ERR(device->CreateCommandList(0,
                                         D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -661,12 +741,16 @@ void RenderDXR::build_shader_resource_heap()
 {
     // The CBV/SRV/UAV resource heap has the pointers/views things to our output image buffer
     // and the top level acceleration structure, and any textures
-    raygen_desc_heap = dxr::DescriptorHeapBuilder()
-#if REPORT_RAY_STATS
-                           .add_uav_range(3, 0, 0)
-#else
-                           .add_uav_range(2, 0, 0)
+    int uav_size = 2;
+#ifdef ENABLE_OIDN
+    uav_size++;
 #endif
+#if REPORT_RAY_STATS
+    uav_size++;
+#endif
+
+    raygen_desc_heap = dxr::DescriptorHeapBuilder()
+                           .add_uav_range(uav_size, 0, 0)
                            .add_srv_range(3, 0, 0)
                            .add_cbv_range(1, 0, 0)
                            .add_srv_range(!textures.empty() ? textures.size() : 1, 3, 0)
@@ -804,13 +888,33 @@ void RenderDXR::build_descriptor_heap()
         uav_desc.Format = DXGI_FORMAT_UNKNOWN;
         uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         uav_desc.Buffer.FirstElement = 0;
-        uav_desc.Buffer.StructureByteStride = sizeof(glm::vec4);
+    #ifdef ENABLE_OIDN
+         uav_desc.Buffer.StructureByteStride = 3 * sizeof(glm::vec4);
+    #else
+         uav_desc.Buffer.StructureByteStride = sizeof(glm::vec4);
+    #endif
         uav_desc.Buffer.NumElements = accum_buffer.size() / uav_desc.Buffer.StructureByteStride;
         uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
         device->CreateUnorderedAccessView(accum_buffer.get(), nullptr, &uav_desc, heap_handle);
         heap_handle.ptr +=
             device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
+
+#ifdef ENABLE_OIDN
+    // Denoise buffer
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
+        uav_desc.Format = DXGI_FORMAT_UNKNOWN;
+        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uav_desc.Buffer.FirstElement = 0;
+        uav_desc.Buffer.StructureByteStride = sizeof(glm::vec4);
+        uav_desc.Buffer.NumElements = denoise_buffer.size() / uav_desc.Buffer.StructureByteStride;
+        uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        device->CreateUnorderedAccessView(denoise_buffer.get(), nullptr, &uav_desc, heap_handle);
+        heap_handle.ptr +=
+            device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+#endif
 
 #ifdef REPORT_RAY_STATS
     // Ray stats buffer
@@ -923,16 +1027,21 @@ void RenderDXR::record_command_lists()
     D3D12_RESOURCE_BARRIER barrier = barrier_uav(accum_buffer);
     render_cmd_list->ResourceBarrier(1, &barrier);
 
-    render_cmd_list->SetPipelineState(tonemap_ps.Get());
-    render_cmd_list->SetComputeRootSignature(tonemap_root_sig.get());
-    render_cmd_list->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
+    CHECK_ERR(render_cmd_list->Close());
+
+    // Tonemap
+    CHECK_ERR(tonemap_cmd_list->Reset(render_cmd_allocator.Get(), nullptr));
+    tonemap_cmd_list->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
+    tonemap_cmd_list->SetPipelineState(tonemap_ps.Get());
+    tonemap_cmd_list->SetComputeRootSignature(tonemap_root_sig.get());
+    tonemap_cmd_list->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
 
     glm::uvec2 dispatch_dim = render_target.dims();
     glm::uvec2 workgroup_dim(16, 16);
     dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
-    render_cmd_list->Dispatch(dispatch_dim.x, dispatch_dim.y, 1);
+    tonemap_cmd_list->Dispatch(dispatch_dim.x, dispatch_dim.y, 1);
 
-    CHECK_ERR(render_cmd_list->Close());
+    CHECK_ERR(tonemap_cmd_list->Close());
 
     // Now copy the rendered image into our readback heap so we can give it back
     // to our simple window to blit the image (TODO: Maybe in the future keep this on the GPU?
