@@ -73,42 +73,42 @@ else()
         find_path(Vulkan_INCLUDE_DIR
             NAMES vulkan/vulkan.h
             PATHS
-            ${VULKAN_SDK}/x86_64/include
-            $ENV{VULKAN_SDK}/x86_64/include
+            ${VULKAN_SDK}/include
+            $ENV{VULKAN_SDK}/include
             NO_DEFAULT_PATH
         )
         find_library(Vulkan_LIBRARY
             NAMES vulkan
             PATHS
-            ${VULKAN_SDK}/x86_64/lib
-            $ENV{VULKAN_SDK}/x86_64/lib
+            ${VULKAN_SDK}/lib
+            $ENV{VULKAN_SDK}/lib
             NO_DEFAULT_PATH
         )
         find_program(GLSLC
             NAMES glslc
             PATHS
-            ${VULKAN_SDK}/x86_64/bin
-            $ENV{VULKAN_SDK}/x86_64/bin
+            ${VULKAN_SDK}/bin
+            $ENV{VULKAN_SDK}/bin
             NO_DEFAULT_PATH
         )
     else ()
         find_path(Vulkan_INCLUDE_DIR
             NAMES vulkan/vulkan.h
             PATHS
-            ${VULKAN_SDK}/x86_64/include
-            $ENV{VULKAN_SDK}/x86_64/include
+            ${VULKAN_SDK}/include
+            $ENV{VULKAN_SDK}/include
         )
         find_library(Vulkan_LIBRARY
             NAMES vulkan
             PATHS
-            ${VULKAN_SDK}/x86_64/lib
-            $ENV{VULKAN_SDK}/x86_64/lib
+            ${VULKAN_SDK}/lib
+            $ENV{VULKAN_SDK}/lib
         )
         find_program(GLSLC
             NAMES glslc
             PATHS
-            ${VULKAN_SDK}/x86_64/bin
-            $ENV{VULKAN_SDK}/x86_64/bin
+            ${VULKAN_SDK}/bin
+            $ENV{VULKAN_SDK}/bin
         )
     endif ()
 endif()
