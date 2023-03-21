@@ -69,11 +69,16 @@ std::string RenderDXR::name()
 void RenderDXR::initialize(const int fb_width, const int fb_height)
 {
 #ifdef ENABLE_OIDN
+    // Get the LUID of the adapter
+    LUID luid = device->GetAdapterLuid();
+
     // Initialize the denoiser device
-    oidn_device = oidn::newDevice();
+    oidn_device = oidn::newDevice(oidn::LUID{luid.LowPart, luid.HighPart});
+    if (oidn_device.getError() != oidn::Error::None)
+        throw std::runtime_error("Failed to create OIDN device.");
     oidn_device.commit();
     if (oidn_device.getError() != oidn::Error::None)
-        throw std::runtime_error("Failed to initialize OIDN device.");
+        throw std::runtime_error("Failed to commit OIDN device.");
 
     // Find a compatible external memory handle type
     const auto oidn_external_mem_types = oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
@@ -136,6 +141,8 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
     {
         // Initialize the denoiser filter
         oidn_filter = oidn_device.newFilter("RT");
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to create OIDN filter.");
 
         HANDLE accum_buffer_handle = nullptr;
         CHECK_ERR(device->CreateSharedHandle(
@@ -171,7 +178,7 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
         
         oidn_filter.commit();
         if (oidn_device.getError() != oidn::Error::None)
-            throw std::runtime_error("Failed to initialize OIDN filter.");
+            throw std::runtime_error("Failed to commit OIDN filter.");
     }
 #endif
 }

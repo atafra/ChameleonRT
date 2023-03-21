@@ -85,11 +85,25 @@ std::string RenderVulkan::name()
 void RenderVulkan::initialize(const int fb_width, const int fb_height)
 {
 #ifdef ENABLE_OIDN
+    // Query the UUID of the Vulkan physical device
+    VkPhysicalDeviceIDProperties id_properties{};
+    id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &id_properties;
+    vkGetPhysicalDeviceProperties2(device->physical_device(), &properties);
+
+    oidn::UUID uuid;
+    std::memcpy(uuid.bytes, id_properties.deviceUUID, sizeof(uuid.bytes));
+
     // Initialize the denoiser device
-    oidn_device = oidn::newDevice();
+    oidn_device = oidn::newDevice(uuid);
+    if (oidn_device.getError() != oidn::Error::None)
+        throw std::runtime_error("Failed to create OIDN device.");
     oidn_device.commit();
     if (oidn_device.getError() != oidn::Error::None)
-        throw std::runtime_error("Failed to initialize OIDN device.");
+        throw std::runtime_error("Failed to commit OIDN device.");
 
     // Find a compatible external memory handle type
     const auto oidn_external_mem_types = oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
@@ -228,6 +242,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     {
         // Initialize the denoiser filter
         oidn_filter = oidn_device.newFilter("RT");
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to create OIDN filter.");
 
         auto input_buffer  = oidn_device.newBuffer(oidn_external_mem_type,
                                                    accum_buffer->external_mem_handle(external_mem_type),
@@ -257,7 +273,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         
         oidn_filter.commit();
         if (oidn_device.getError() != oidn::Error::None)
-            throw std::runtime_error("Failed to initialize OIDN filter.");
+            throw std::runtime_error("Failed to commit OIDN filter.");
     }
 #endif
 }
