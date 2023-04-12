@@ -53,6 +53,8 @@ class Device {
     VkPhysicalDeviceMemoryProperties mem_props = {};
     VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props = {};
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt_pipeline_props = {};
+    bool vk_external_mem_fd = false;
+    bool vk_external_mem_dma_buf = false;
 
 public:
     Device(const std::vector<std::string> &instance_extensions = std::vector<std::string>{},

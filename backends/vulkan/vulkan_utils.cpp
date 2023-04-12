@@ -307,10 +307,22 @@ void Device::select_physical_device()
                 return std::strcmp(e.extensionName,
                                    VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0;
             });
+        auto external_mem_fd = std::find_if(
+        extensions.begin(), extensions.end(), [](const VkExtensionProperties &e) {
+            return std::strcmp(e.extensionName,
+                               VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) == 0;
+        });
+        auto external_mem_dma_buf = std::find_if(
+        extensions.begin(), extensions.end(), [](const VkExtensionProperties &e) {
+            return std::strcmp(e.extensionName,
+                               VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) == 0;
+        });
 
         if (khr_accel_struct != extensions.end() && khr_ray_pipeline != extensions.end()) {
             vk_physical_device = d;
             vk_physical_device_limits = properties.limits;
+            vk_external_mem_fd = external_mem_fd != extensions.end();
+            vk_external_mem_dma_buf = external_mem_dma_buf != extensions.end();
             break;
         }
     }
@@ -379,13 +391,18 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
         VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
         VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
-    #ifdef _WIN32
-        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
-    #else
-        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-        VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME
-    #endif
     };
+
+    #ifdef ENABLE_OIDN
+    #ifdef _WIN32
+        device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+    #else
+        if (vk_external_mem_fd)
+            device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        if (vk_external_mem_dma_buf)
+            device_extensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    #endif
+    #endif
 
     for (const auto &ext : extensions) {
         device_extensions.push_back(ext.c_str());
