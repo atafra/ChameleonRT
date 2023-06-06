@@ -270,6 +270,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                              0, sizeof(glm::vec4));
 
         oidn_filter.set("hdr", true);
+        oidn_filter.set("quality", oidn::Quality::Balanced);
         
         oidn_filter.commit();
         if (oidn_device.getError() != oidn::Error::None)
