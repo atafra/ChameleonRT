@@ -19,6 +19,9 @@ RenderMetal::RenderMetal(std::shared_ptr<metal::Context> ctx) : context(ctx)
         pipeline = std::make_shared<metal::ComputePipeline>(
             *context, shader_library->new_function(@"raygen"));
 
+        tonemap_pipeline = std::make_shared<metal::ComputePipeline>(
+            *context, shader_library->new_function(@"tonemap"));
+
         native_display = true;
     }
 }
@@ -216,10 +219,9 @@ RenderStats RenderMetal::render(const glm::vec3 &pos,
         id<MTLCommandBuffer> command_buffer = context->command_buffer();
         id<MTLComputeCommandEncoder> command_encoder = [command_buffer computeCommandEncoder];
 
-        [command_encoder setTexture:render_target->texture atIndex:0];
         [command_encoder setBuffer:accum_buffer->buffer offset:0 atIndex:8];
 #ifdef REPORT_RAY_STATS
-        [command_encoder setTexture:ray_stats->texture atIndex:1];
+        [command_encoder setTexture:ray_stats->texture atIndex:0];
 #endif
 
         // Embed the view params in the command buffer
@@ -256,6 +258,22 @@ RenderStats RenderMetal::render(const glm::vec3 &pos,
         [command_buffer waitUntilCompleted];
         auto end = high_resolution_clock::now();
         stats.render_time = duration_cast<nanoseconds>(end - start).count() * 1.0e-6;
+
+        // Tonemap
+        command_buffer = context->command_buffer();
+        command_encoder = [command_buffer computeCommandEncoder];
+
+        [command_encoder setTexture:render_target->texture atIndex:0];
+        [command_encoder setBuffer:accum_buffer->buffer offset:0 atIndex:0];
+
+        [command_encoder setComputePipelineState:tonemap_pipeline->pipeline];
+
+        [command_encoder dispatchThreads:MTLSizeMake(fb_dims.x, fb_dims.y, 1)
+                   threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+
+        [command_encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
         if (readback_framebuffer || !native_display) {
             render_target->readback(img.data());

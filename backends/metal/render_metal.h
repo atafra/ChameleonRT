@@ -24,6 +24,7 @@ struct RenderMetal : RenderBackend {
 
     std::shared_ptr<metal::ShaderLibrary> shader_library;
     std::shared_ptr<metal::ComputePipeline> pipeline;
+    std::shared_ptr<metal::ComputePipeline> tonemap_pipeline;
 
     std::shared_ptr<metal::Texture2D> render_target;
     std::shared_ptr<metal::Buffer> accum_buffer;
