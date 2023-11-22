@@ -46,12 +46,10 @@ void RenderMetal::initialize(const int fb_width, const int fb_height)
             MTLPixelFormatRGBA8Unorm,
             MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
 
-        accum_buffer = std::make_shared<metal::Texture2D>(
+        accum_buffer = std::make_shared<metal::Buffer>(
             *context,
-            fb_width,
-            fb_height,
-            MTLPixelFormatRGBA32Float,
-            MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
+            fb_width * fb_height * sizeof(glm::vec4),
+            MTLResourceStorageModePrivate);
 
 #ifdef REPORT_RAY_STATS
         ray_stats_readback.resize(fb_width * fb_height);
@@ -219,9 +217,9 @@ RenderStats RenderMetal::render(const glm::vec3 &pos,
         id<MTLComputeCommandEncoder> command_encoder = [command_buffer computeCommandEncoder];
 
         [command_encoder setTexture:render_target->texture atIndex:0];
-        [command_encoder setTexture:accum_buffer->texture atIndex:1];
+        [command_encoder setBuffer:accum_buffer->buffer offset:0 atIndex:8];
 #ifdef REPORT_RAY_STATS
-        [command_encoder setTexture:ray_stats->texture atIndex:2];
+        [command_encoder setTexture:ray_stats->texture atIndex:1];
 #endif
 
         // Embed the view params in the command buffer

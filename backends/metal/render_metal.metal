@@ -189,10 +189,11 @@ float3 miss_shader(thread const float3 &dir)
 }
 
 kernel void raygen(uint2 tid [[thread_position_in_grid]],
+                   uint2 dims [[threads_per_grid]],
                    texture2d<float, access::write> render_target [[texture(0)]],
-                   texture2d<float, access::read_write> accum_buffer [[texture(1)]],
+                   device AccumPixel *accum_buffer [[buffer(8)]],
 #ifdef REPORT_RAY_STATS
-                   texture2d<uint, access::write> ray_stats [[texture(2)]],
+                   texture2d<uint, access::write> ray_stats [[texture(1)]],
 #endif
                    constant ViewParams &view_params [[buffer(0)]],
                    instance_acceleration_structure scene [[buffer(1)]],
@@ -329,9 +330,10 @@ kernel void raygen(uint2 tid [[thread_position_in_grid]],
         }
     } while (bounce < MAX_PATH_DEPTH);
 
-    const float3 accum_color = (illum + view_params.frame_id * accum_buffer.read(tid).xyz) /
+    const uint pixel_index = dims.x * tid.y + tid.x;
+    const float3 accum_color = (illum + view_params.frame_id * accum_buffer[pixel_index].color.xyz) /
                                (view_params.frame_id + 1);
-    accum_buffer.write(float4(accum_color, 1.f), tid);
+    accum_buffer[pixel_index].color = float4(accum_color, 1.f);
     render_target.write(float4(linear_to_srgb(accum_color.x),
                                linear_to_srgb(accum_color.y),
                                linear_to_srgb(accum_color.z),

@@ -9,6 +9,14 @@
 
 using namespace metal;
 
+struct AccumPixel {
+	float4 color;
+#ifdef ENABLE_OIDN
+	float4 albedo;
+	float4 normal;
+#endif
+};
+
 float linear_to_srgb(float x)
 {
     if (x <= 0.0031308f) {
