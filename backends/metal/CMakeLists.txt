@@ -28,6 +28,9 @@ set(METAL_COMPILE_DEFNS "")
 if (REPORT_RAY_STATS)
     set(METAL_COMPILE_DEFNS "REPORT_RAY_STATS=1")
 endif()
+if (ENABLE_OIDN)
+    set(METAL_COMPILE_DEFNS "${METAL_COMPILE_DEFNS} ENABLE_OIDN=1")
+endif()
 
 add_metal_embed_library(metal_shaders
     render_metal.metal

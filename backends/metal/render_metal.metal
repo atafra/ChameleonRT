@@ -222,6 +222,11 @@ kernel void raygen(uint2 tid [[thread_position_in_grid]],
     float3 illum = float3(0, 0, 0);
     float3 path_throughput = float3(1, 1, 1);
 
+#ifdef ENABLE_OIDN
+    float3 first_albedo = float3(0, 0, 0);
+    float3 first_normal = float3(0, 0, 0);
+#endif
+
     intersector<instancing, triangle_data> traversal;
     typename intersector<instancing, triangle_data>::result_type hit_result;
     traversal.assume_geometry_type(geometry_type::triangle);
@@ -234,7 +239,12 @@ kernel void raygen(uint2 tid [[thread_position_in_grid]],
 #endif
 
         if (hit_result.type == intersection_type::none) {
-            illum += path_throughput * miss_shader(ray.direction);
+            const float3 miss_color = miss_shader(ray.direction);
+            illum += path_throughput * miss_color;
+        #ifdef ENABLE_OIDN
+            if (bounce == 0)
+                first_albedo = miss_color;
+        #endif
             break;
         }
 
@@ -291,6 +301,13 @@ kernel void raygen(uint2 tid [[thread_position_in_grid]],
         }
         ortho_basis(v_x, v_y, v_z);
 
+    #ifdef ENABLE_OIDN
+        if (bounce == 0) {
+            first_albedo = mat.base_color;
+            first_normal = v_z;
+        }
+    #endif
+
         illum += path_throughput * sample_direct_light(scene,
                                                        mat,
                                                        hit_p,
@@ -333,6 +350,17 @@ kernel void raygen(uint2 tid [[thread_position_in_grid]],
     const float3 accum_color = (illum + view_params.frame_id * accum_buffer[pixel_index].color.xyz) /
                                (view_params.frame_id + 1);
     accum_buffer[pixel_index].color = float4(accum_color, 1.f);
+
+#ifdef ENABLE_OIDN
+    const float3 accum_albedo = (first_albedo + view_params.frame_id * accum_buffer[pixel_index].albedo.xyz) /
+                                (view_params.frame_id + 1);
+    accum_buffer[pixel_index].albedo = float4(accum_albedo, 1.f);
+
+    const float3 accum_normal = (first_normal + view_params.frame_id * accum_buffer[pixel_index].normal.xyz) /
+                                (view_params.frame_id + 1);
+    accum_buffer[pixel_index].normal = float4(accum_normal, 1.f);
+#endif
+
 #ifdef REPORT_RAY_STATS
     ray_stats.write(ray_count, tid);
 #endif
@@ -341,13 +369,13 @@ kernel void raygen(uint2 tid [[thread_position_in_grid]],
 kernel void tonemap(uint2 tid [[thread_position_in_grid]],
                     uint2 dims [[threads_per_grid]],
                     texture2d<float, access::write> render_target [[texture(0)]],
-                    device AccumPixel *accum_buffer [[buffer(0)]])
+                    device float4 *color_buffer [[buffer(0)]])
 {
     const uint pixel_index = dims.x * tid.y + tid.x;
-    const float3 accum_color = accum_buffer[pixel_index].color.xyz;
-    render_target.write(float4(linear_to_srgb(accum_color.x),
-                               linear_to_srgb(accum_color.y),
-                               linear_to_srgb(accum_color.z),
+    const float3 color = color_buffer[pixel_index].xyz;
+    render_target.write(float4(linear_to_srgb(color.x),
+                               linear_to_srgb(color.y),
+                               linear_to_srgb(color.z),
                                1.f),
                         tid);
 }

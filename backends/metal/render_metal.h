@@ -4,6 +4,10 @@
 #include "render_backend.h"
 #include "shader_types.h"
 
+#ifdef ENABLE_OIDN
+#include <OpenImageDenoise/oidn.hpp>
+#endif
+
 // We just declare the Metal API wrapper objects because we
 // don't want to include the header here as it will pull in
 // ObjC objects into this file which is included from plain C++ files
@@ -48,6 +52,12 @@ struct RenderMetal : RenderBackend {
 
     uint32_t frame_id = 0;
     bool native_display = false;
+
+#ifdef ENABLE_OIDN
+    std::shared_ptr<metal::Buffer> denoise_buffer;
+    oidn::DeviceRef oidn_device;
+    oidn::FilterRef oidn_filter;
+#endif
 
     RenderMetal(std::shared_ptr<metal::Context> context);
 

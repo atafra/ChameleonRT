@@ -39,6 +39,15 @@ std::string RenderMetal::name()
 void RenderMetal::initialize(const int fb_width, const int fb_height)
 {
     @autoreleasepool {
+
+    #ifdef ENABLE_OIDN
+        // Initialize the denoiser device
+        oidn_device = oidn::newMetalDevice(context->command_queue);
+        oidn_device.commit();
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to initialize OIDN device.");
+    #endif
+
         frame_id = 0;
         img.resize(fb_width * fb_height);
 
@@ -49,15 +58,54 @@ void RenderMetal::initialize(const int fb_width, const int fb_height)
             MTLPixelFormatRGBA8Unorm,
             MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
 
+    #ifdef ENABLE_OIDN
+        accum_buffer = std::make_shared<metal::Buffer>(
+            *context,
+            fb_width * fb_height * sizeof(glm::vec4) * 3,
+            MTLResourceStorageModePrivate);
+
+        denoise_buffer = std::make_shared<metal::Buffer>(
+            *context,
+            fb_width * fb_height * sizeof(glm::vec4),
+            MTLResourceStorageModePrivate);
+    #else
         accum_buffer = std::make_shared<metal::Buffer>(
             *context,
             fb_width * fb_height * sizeof(glm::vec4),
             MTLResourceStorageModePrivate);
+    #endif
 
 #ifdef REPORT_RAY_STATS
         ray_stats_readback.resize(fb_width * fb_height);
         ray_stats = std::make_shared<metal::Texture2D>(
             *context, fb_width, fb_height, MTLPixelFormatR16Uint, MTLTextureUsageShaderWrite);
+#endif
+
+#ifdef ENABLE_OIDN
+    {
+        // Initialize the denoiser filter
+        oidn_filter = oidn_device.newFilter("RT");
+
+        auto input_buffer  = oidn_device.newBuffer(accum_buffer->buffer);
+        auto output_buffer = oidn_device.newBuffer(denoise_buffer->buffer);
+
+        oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("albedo", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             1 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("normal", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             2 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+
+        oidn_filter.setImage("output", output_buffer, oidn::Format::Float3, fb_width, fb_height,
+                             0, sizeof(glm::vec4));
+
+        oidn_filter.set("hdr", true);
+        oidn_filter.set("quality", oidn::Quality::Balanced);
+
+        oidn_filter.commit();
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to initialize OIDN filter.");
+    }
 #endif
     }
 }
@@ -259,12 +307,21 @@ RenderStats RenderMetal::render(const glm::vec3 &pos,
         auto end = high_resolution_clock::now();
         stats.render_time = duration_cast<nanoseconds>(end - start).count() * 1.0e-6;
 
+    #ifdef ENABLE_OIDN
+        // Denoise the frame
+        oidn_filter.executeAsync();
+    #endif
+
         // Tonemap
         command_buffer = context->command_buffer();
         command_encoder = [command_buffer computeCommandEncoder];
 
         [command_encoder setTexture:render_target->texture atIndex:0];
+    #ifdef ENABLE_OIDN
+        [command_encoder setBuffer:denoise_buffer->buffer offset:0 atIndex:0];
+    #else
         [command_encoder setBuffer:accum_buffer->buffer offset:0 atIndex:0];
+    #endif
 
         [command_encoder setComputePipelineState:tonemap_pipeline->pipeline];
 
