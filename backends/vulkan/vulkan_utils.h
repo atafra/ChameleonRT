@@ -43,6 +43,7 @@ extern PFN_vkGetMemoryFdKHR GetMemoryFdKHR;
 
 class Device {
     VkInstance vk_instance = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT vk_debug_messenger = VK_NULL_HANDLE;
     VkPhysicalDevice vk_physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;

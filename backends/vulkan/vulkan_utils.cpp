@@ -10,6 +10,15 @@ namespace vkrt {
 
 static const std::array<const char *, 1> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(  VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
+                                                VkDebugUtilsMessageTypeFlagsEXT message_type, 
+                                                const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, 
+                                                void* p_user_data) 
+{
+    std::cout << "validation layer: " << p_callback_data->pMessage << std::endl;
+    return VK_FALSE;
+}
+
 PFN_vkCmdTraceRaysKHR CmdTraceRaysKHR = nullptr;
 PFN_vkDestroyAccelerationStructureKHR DestroyAccelerationStructureKHR = nullptr;
 PFN_vkGetRayTracingShaderGroupHandlesKHR GetRayTracingShaderGroupHandlesKHR = nullptr;
@@ -106,12 +115,19 @@ Device::~Device()
 {
     if (vk_instance != VK_NULL_HANDLE) {
         vkDestroyDevice(device, nullptr);
+#if _DEBUG
+        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(vk_instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (func != nullptr) {
+            func(vk_instance, vk_debug_messenger, nullptr);
+        }
+#endif
         vkDestroyInstance(vk_instance, nullptr);
     }
 }
 
 Device::Device(Device &&d)
     : vk_instance(d.vk_instance),
+      vk_debug_messenger(d.vk_debug_messenger),
       vk_physical_device(d.vk_physical_device),
       device(d.device),
       queue(d.queue),
@@ -120,6 +136,7 @@ Device::Device(Device &&d)
       rt_pipeline_props(d.rt_pipeline_props)
 {
     d.vk_instance = VK_NULL_HANDLE;
+    d.vk_debug_messenger = VK_NULL_HANDLE;
     d.vk_physical_device = VK_NULL_HANDLE;
     d.device = VK_NULL_HANDLE;
     d.queue = VK_NULL_HANDLE;
@@ -132,6 +149,7 @@ Device &Device::operator=(Device &&d)
         vkDestroyInstance(vk_instance, nullptr);
     }
     vk_instance = d.vk_instance;
+    vk_debug_messenger = d.vk_debug_messenger;
     vk_physical_device = d.vk_physical_device;
     device = d.device;
     queue = d.queue;
@@ -140,6 +158,7 @@ Device &Device::operator=(Device &&d)
     rt_pipeline_props = d.rt_pipeline_props;
 
     d.vk_instance = VK_NULL_HANDLE;
+    d.vk_debug_messenger = VK_NULL_HANDLE;
     d.vk_physical_device = VK_NULL_HANDLE;
     d.device = VK_NULL_HANDLE;
     d.queue = VK_NULL_HANDLE;
@@ -257,7 +276,9 @@ void Device::make_instance(const std::vector<std::string> &extensions)
     std::vector<const char *> extension_names;
     for (const auto &ext : extensions) {
         extension_names.push_back(ext.c_str());
+        std::cout << ext << std::endl;
     }
+
 
     VkInstanceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -266,14 +287,28 @@ void Device::make_instance(const std::vector<std::string> &extensions)
     create_info.ppEnabledExtensionNames =
         extension_names.empty() ? nullptr : extension_names.data();
 #ifdef _DEBUG
-    create_info.enabledLayerCount = validation_layers.size();
-    create_info.ppEnabledLayerNames = validation_layers.data();
+    VkDebugUtilsMessengerCreateInfoEXT debug_create_info{};
+    debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    debug_create_info.pfnUserCallback = debug_callback;
+
+    create_info.enabledLayerCount = 0;
+    create_info.ppEnabledLayerNames = nullptr;
+    create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debug_create_info;
 #else
     create_info.enabledLayerCount = 0;
     create_info.ppEnabledLayerNames = nullptr;
 #endif
 
     CHECK_VULKAN(vkCreateInstance(&create_info, nullptr, &vk_instance));
+
+#if _DEBUG
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(vk_instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        func(vk_instance, &debug_create_info, nullptr, &vk_debug_messenger);
+    }
+#endif
 }
 
 void Device::select_physical_device()

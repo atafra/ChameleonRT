@@ -34,6 +34,13 @@ std::vector<std::string> get_instance_extensions(SDL_Window *window)
                    sdl_extensions.end(),
                    std::back_inserter(instance_extensions),
                    [](const char *str) { return std::string(str); });
+
+#if _DEBUG
+    if (std::find_if(instance_extensions.begin(), instance_extensions.end(), [](auto e) { return e == VK_EXT_DEBUG_UTILS_EXTENSION_NAME; }) == instance_extensions.end()) {
+        instance_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+#endif
+
     return instance_extensions;
 }
 
