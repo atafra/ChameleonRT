@@ -332,7 +332,6 @@ void Device::make_instance(const std::vector<std::string> &extensions)
     std::vector<const char *> extension_names;
     for (const auto &ext : extensions) {
         extension_names.push_back(ext.c_str());
-        std::cout << ext << std::endl;
     }
 
 
