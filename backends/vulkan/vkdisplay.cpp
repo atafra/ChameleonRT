@@ -359,6 +359,7 @@ void VKDisplay::display_native(std::shared_ptr<vkrt::Texture2D> &img)
                                        VK_NULL_HANDLE,
                                        &back_buffer_idx));
 
+
     vkResetCommandPool(
         device->logical_device(), command_pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 

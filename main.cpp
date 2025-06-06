@@ -212,6 +212,7 @@ void run_app(const std::vector<std::string> &args,
     bool done = false;
     bool camera_changed = true;
     bool save_image = false;
+    bool resizing = false;
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -257,16 +258,18 @@ void run_app(const std::vector<std::string> &args,
                     camera_changed = true;
                 }
             }
-            if (event.type == SDL_WINDOWEVENT &&
-                event.window.event == SDL_WINDOWEVENT_RESIZED) {
+            if (event.type == SDL_WINDOWEVENT) {
+
+            }
+            if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
                 frame_id = 0;
                 win_width = event.window.data1;
                 win_height = event.window.data2;
                 io.DisplaySize.x = win_width;
                 io.DisplaySize.y = win_height;
-
                 display->resize(win_width, win_height);
                 renderer->initialize(win_width, win_height);
+                resizing = true;
             }
         }
 
@@ -345,6 +348,8 @@ void run_app(const std::vector<std::string> &args,
         ImGui::End();
         ImGui::Render();
 
-        display->display(renderer.get());
+        if (!resizing)
+            display->display(renderer.get());
+        resizing = false;
     }
 }

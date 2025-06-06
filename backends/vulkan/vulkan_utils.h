@@ -12,16 +12,19 @@
 #endif
 #include <glm/glm.hpp>
 
+
 #define CHECK_VULKAN(FN)                                   \
     {                                                      \
         VkResult r = FN;                                   \
         if (r != VK_SUCCESS) {                             \
-            std::cout << #FN << " failed\n" << std::flush; \
+            std::cout << #FN << " failed with error " << vkrt::vkResultString(r) << "\n" << std::flush; \
             throw std::runtime_error(#FN " failed!");      \
         }                                                  \
     }
 
 namespace vkrt {
+
+const char* vkResultString(VkResult r);
 
 extern PFN_vkCmdTraceRaysKHR CmdTraceRaysKHR;
 extern PFN_vkDestroyAccelerationStructureKHR DestroyAccelerationStructureKHR;
