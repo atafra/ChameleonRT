@@ -8,6 +8,11 @@ endif()
 add_definitions(-DNOMINMAX -DGLM_ENABLE_EXPERIMENTAL -DSDL_MAIN_HANDLED
     -DWIN32_LEAN_AND_MEAN)
 
+if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+    add_definitions(-D_DEBUG)
+endif ()
+
+
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # Output all render plugins to the root binary dir where the executable is
 # so setting runtime paths is easier

@@ -8,7 +8,72 @@
 
 namespace vkrt {
 
+const char* vkResultString(VkResult r) {
+    switch(r) {
+        case VK_SUCCESS: return "VK_SUCCESS";
+        case VK_NOT_READY: return "VK_NOT_READY";
+        case VK_TIMEOUT: return "VK_TIMEOUT";
+        case VK_EVENT_SET: return "VK_EVENT_SET";
+        case VK_EVENT_RESET: return "VK_EVENT_RESET";
+        case VK_INCOMPLETE: return "VK_INCOMPLETE";
+        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+        case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+        case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+        case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+        case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+        case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+        case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+        case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+        case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+        case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+        case VK_ERROR_FRAGMENTATION: return "VK_ERROR_FRAGMENTATION";
+        case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+        case VK_PIPELINE_COMPILE_REQUIRED: return "VK_PIPELINE_COMPILE_REQUIRED";
+        case VK_ERROR_NOT_PERMITTED: return "VK_ERROR_NOT_PERMITTED";
+        case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+        case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+        case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+        case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+        case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR: return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
+        case VK_ERROR_VALIDATION_FAILED_EXT: return "VK_ERROR_VALIDATION_FAILED_EXT";
+        case VK_ERROR_INVALID_SHADER_NV: return "VK_ERROR_INVALID_SHADER_NV";
+        case VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR: return "VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR";
+        case VK_ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR: return "VK_ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR";
+        case VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR: return "VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR";
+        case VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR: return "VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR";
+        case VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR: return "VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR";
+        case VK_ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR: return "VK_ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR";
+        case VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT: return "VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT";
+        case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT: return "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT";
+        case VK_THREAD_IDLE_KHR: return "VK_THREAD_IDLE_KHR";
+        case VK_THREAD_DONE_KHR: return "VK_THREAD_DONE_KHR";
+        case VK_OPERATION_DEFERRED_KHR: return "VK_OPERATION_DEFERRED_KHR";
+        case VK_OPERATION_NOT_DEFERRED_KHR: return "VK_OPERATION_NOT_DEFERRED_KHR";
+        case VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR: return "VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR";
+        case VK_ERROR_COMPRESSION_EXHAUSTED_EXT: return "VK_ERROR_COMPRESSION_EXHAUSTED_EXT";
+        case VK_INCOMPATIBLE_SHADER_BINARY_EXT: return "VK_INCOMPATIBLE_SHADER_BINARY_EXT";
+        case VK_PIPELINE_BINARY_MISSING_KHR: return "VK_PIPELINE_BINARY_MISSING_KHR";
+        case VK_ERROR_NOT_ENOUGH_SPACE_KHR: return "VK_ERROR_NOT_ENOUGH_SPACE_KHR";
+        default: 
+            return "Unknown Vulkan result";
+    }
+}
+
 static const std::array<const char *, 1> validation_layers = {"VK_LAYER_KHRONOS_validation"};
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(  VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
+                                                VkDebugUtilsMessageTypeFlagsEXT message_type, 
+                                                const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, 
+                                                void* p_user_data) 
+{
+    std::cout << "validation layer: " << p_callback_data->pMessage << std::endl;
+    return VK_FALSE;
+}
 
 PFN_vkCmdTraceRaysKHR CmdTraceRaysKHR = nullptr;
 PFN_vkDestroyAccelerationStructureKHR DestroyAccelerationStructureKHR = nullptr;
@@ -106,12 +171,19 @@ Device::~Device()
 {
     if (vk_instance != VK_NULL_HANDLE) {
         vkDestroyDevice(device, nullptr);
+#if _DEBUG
+        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(vk_instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (func != nullptr) {
+            func(vk_instance, vk_debug_messenger, nullptr);
+        }
+#endif
         vkDestroyInstance(vk_instance, nullptr);
     }
 }
 
 Device::Device(Device &&d)
     : vk_instance(d.vk_instance),
+      vk_debug_messenger(d.vk_debug_messenger),
       vk_physical_device(d.vk_physical_device),
       device(d.device),
       queue(d.queue),
@@ -120,6 +192,7 @@ Device::Device(Device &&d)
       rt_pipeline_props(d.rt_pipeline_props)
 {
     d.vk_instance = VK_NULL_HANDLE;
+    d.vk_debug_messenger = VK_NULL_HANDLE;
     d.vk_physical_device = VK_NULL_HANDLE;
     d.device = VK_NULL_HANDLE;
     d.queue = VK_NULL_HANDLE;
@@ -132,6 +205,7 @@ Device &Device::operator=(Device &&d)
         vkDestroyInstance(vk_instance, nullptr);
     }
     vk_instance = d.vk_instance;
+    vk_debug_messenger = d.vk_debug_messenger;
     vk_physical_device = d.vk_physical_device;
     device = d.device;
     queue = d.queue;
@@ -140,6 +214,7 @@ Device &Device::operator=(Device &&d)
     rt_pipeline_props = d.rt_pipeline_props;
 
     d.vk_instance = VK_NULL_HANDLE;
+    d.vk_debug_messenger = VK_NULL_HANDLE;
     d.vk_physical_device = VK_NULL_HANDLE;
     d.device = VK_NULL_HANDLE;
     d.queue = VK_NULL_HANDLE;
@@ -259,6 +334,7 @@ void Device::make_instance(const std::vector<std::string> &extensions)
         extension_names.push_back(ext.c_str());
     }
 
+
     VkInstanceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create_info.pApplicationInfo = &app_info;
@@ -266,14 +342,28 @@ void Device::make_instance(const std::vector<std::string> &extensions)
     create_info.ppEnabledExtensionNames =
         extension_names.empty() ? nullptr : extension_names.data();
 #ifdef _DEBUG
-    create_info.enabledLayerCount = validation_layers.size();
-    create_info.ppEnabledLayerNames = validation_layers.data();
+    VkDebugUtilsMessengerCreateInfoEXT debug_create_info{};
+    debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    debug_create_info.pfnUserCallback = debug_callback;
+
+    create_info.enabledLayerCount = 0;
+    create_info.ppEnabledLayerNames = nullptr;
+    create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debug_create_info;
 #else
     create_info.enabledLayerCount = 0;
     create_info.ppEnabledLayerNames = nullptr;
 #endif
 
     CHECK_VULKAN(vkCreateInstance(&create_info, nullptr, &vk_instance));
+
+#if _DEBUG
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(vk_instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        func(vk_instance, &debug_create_info, nullptr, &vk_debug_messenger);
+    }
+#endif
 }
 
 void Device::select_physical_device()
