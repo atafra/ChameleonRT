@@ -11,6 +11,10 @@
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
 
+#define OIDN_SYNC_METHOD_HOST 0
+#define OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE 1
+#define OIDN_SNYC_METHOD OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+
 struct HitGroupParams {
     uint64_t vert_buf = 0;
     uint64_t idx_buf = 0;
@@ -71,6 +75,13 @@ struct RenderVulkan : RenderBackend {
     vkrt::ShaderBindingTable shader_table;
 
     VkFence fence = VK_NULL_HANDLE;
+
+#if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+    VkSemaphore timeline_semaphore;
+    #ifdef ENABLE_OIDN
+        oidn::SemaphoreRef oidn_timeline_semaphore;
+    #endif
+#endif
 
     VkQueryPool timing_query_pool;
 
