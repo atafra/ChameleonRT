@@ -288,7 +288,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         }
         
         oidn_timeline_semaphore = oidn_device.newSemaphore(
-            oidn::ExternalSemaphoreTypeFlag::OpaqueWin32, win32_semaphore_handle, NULL);
+            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, NULL);
     #endif
 
     }
@@ -850,12 +850,12 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     static uint64_t render_wait_value = 0;
     static uint64_t render_signal_value = 1;
 
-    VkSemaphoreWaitInfo semaphoreWaitInfo = {};
-    semaphoreWaitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-    semaphoreWaitInfo.pSemaphores = &timeline_semaphore;
-    semaphoreWaitInfo.semaphoreCount = 1;
-    semaphoreWaitInfo.pValues = &render_wait_value;
-    vkWaitSemaphores(device->logical_device(), &semaphoreWaitInfo, std::numeric_limits<uint64_t>::max());
+    //VkSemaphoreWaitInfo semaphoreWaitInfo = {};
+    //semaphoreWaitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    //semaphoreWaitInfo.pSemaphores = &timeline_semaphore;
+    //semaphoreWaitInfo.semaphoreCount = 1;
+    //semaphoreWaitInfo.pValues = &render_wait_value;
+    //vkWaitSemaphores(device->logical_device(), &semaphoreWaitInfo, std::numeric_limits<uint64_t>::max());
 
     std::vector<VkPipelineStageFlags> waitStages;
     waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
@@ -885,7 +885,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         // Denoise the frame
         oidn_filter.execute();
 
-#elif OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+    #elif OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
         render_wait_value += 3;
         render_signal_value += 3;
 
@@ -902,9 +902,9 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         static uint64_t tonemap_signal_value = 3;
         timelineInfo.pWaitSemaphoreValues = &tonemap_wait_value;
         timelineInfo.pSignalSemaphoreValues = &tonemap_signal_value;
-#else
+    #else
         throw(std::logic_error("Invalid OIDN sync method"));
-#endif  // OIDN_SNYC_METHOD
+    #endif  // OIDN_SNYC_METHOD
 #else
     // without OIDN we still need to synchronize with the host before reading back perf queries
 
@@ -921,7 +921,11 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 
 #if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
     tonemap_wait_value += 3;
-    tonemap_wait_value += 3;
+    tonemap_signal_value += 3;
+
+    // we still need to synchronize with the host before reading back perf queries
+    CHECK_VULKAN(vkWaitForFences(
+        device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
 #endif
 
     // Read back the ray tracing timestamps we recorded
