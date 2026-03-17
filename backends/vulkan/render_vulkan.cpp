@@ -288,7 +288,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         }
         
         oidn_timeline_semaphore = oidn_device.newSemaphore(
-            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, NULL);
+            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr);
     #endif
 
     }

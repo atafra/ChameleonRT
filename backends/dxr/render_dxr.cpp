@@ -180,6 +180,17 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
         oidn_filter.commit();
         if (oidn_device.getError() != oidn::Error::None)
             throw std::runtime_error("Failed to commit OIDN filter.");
+
+    #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+        // Register D3D fence for OIDN interop
+        HANDLE win32_fence_handle;
+        CHECK_ERR(device->CreateSharedHandle(
+            fence.Get(), nullptr, GENERIC_ALL, nullptr, &win32_fence_handle));
+
+        oidn_semaphore = oidn_device.newSemaphore(
+            oidn::ExternalSemaphoreTypeFlag::D3D12Fence, win32_fence_handle, nullptr);
+    #endif
+
     }
 #endif
 }
@@ -603,7 +614,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
 void RenderDXR::create_device_objects()
 {
-    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
     fence_evt = CreateEvent(nullptr, false, false, nullptr);
 
     // Create the command queue and command allocator
