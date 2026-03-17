@@ -58,6 +58,7 @@ RenderDXR::RenderDXR() : native_display(false)
 
 RenderDXR::~RenderDXR()
 {
+    sync_gpu();
     CloseHandle(fence_evt);
 }
 
@@ -528,7 +529,8 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         oidn_filter.execute();
     #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
         // signal fence and let OIDN wait to execute asynchronously
-        const uint64_t oidn_fence_value = fence_value++;
+        const uint64_t oidn_fence_value = fence_value;
+        fence_value += 2;
         cmd_queue->Signal(fence.Get(), oidn_fence_value);
 
         oidn_device.waitSemaphoreAsync(oidn_semaphore, oidn_fence_value);
