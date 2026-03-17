@@ -11,9 +11,9 @@
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
 
-#define OIDN_SYNC_METHOD_HOST 0
-#define OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE 1
-#define OIDN_SNYC_METHOD OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+#define OIDN_INTEROP_METHOD_HOST_BLOCKING 0
+#define OIDN_INTEROP_METHOD_DEVICE_ASYNC 1
+#define OIDN_INTEROP_METHOD OIDN_INTEROP_METHOD_DEVICE_ASYNC
 
 struct HitGroupParams {
     uint64_t vert_buf = 0;
@@ -76,7 +76,7 @@ struct RenderVulkan : RenderBackend {
 
     VkFence fence = VK_NULL_HANDLE;
 
-#if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
     VkSemaphore timeline_semaphore;
     #ifdef ENABLE_OIDN
         oidn::SemaphoreRef oidn_timeline_semaphore;

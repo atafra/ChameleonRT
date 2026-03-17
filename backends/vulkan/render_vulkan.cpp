@@ -77,7 +77,7 @@ RenderVulkan::~RenderVulkan()
     vkDestroyPipeline(device->logical_device(), tonemap_pipeline, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
 
-#if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
     vkDestroySemaphore(device->logical_device(), timeline_semaphore, nullptr);
 #endif
 }
@@ -243,7 +243,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         record_command_buffers();
     }
 
-#if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
     {
         // create Vulkan timeline semaphore
         VkSemaphoreCreateInfo semaphoreInfo = {};
@@ -846,7 +846,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 
     // if timeline semaphore is used, the queue submit command is augmented with wait and
     // signal semaphore infos
-#if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
     static uint64_t render_wait_value = 0;
     static uint64_t render_signal_value = 1;
 
@@ -879,13 +879,13 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence));
 
 #ifdef ENABLE_OIDN
-    #if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_HOST
+    #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_HOST_BLOCKING
         CHECK_VULKAN(vkWaitForFences(
             device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
         // Denoise the frame
         oidn_filter.execute();
 
-    #elif OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
         render_wait_value += 3;
         render_signal_value += 3;
 
@@ -904,7 +904,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         timelineInfo.pSignalSemaphoreValues = &tonemap_signal_value;
     #else
         throw(std::logic_error("Invalid OIDN sync method"));
-    #endif  // OIDN_SNYC_METHOD
+    #endif  // OIDN_INTEROP_METHOD
 #else
     // without OIDN we still need to synchronize with the host before reading back perf queries
 
@@ -919,7 +919,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pCommandBuffers = &tonemap_cmd_buf;
     CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
 
-#if OIDN_SNYC_METHOD == OIDN_SYNC_METHOD_TIMELINE_SEMAPHORE
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
     tonemap_wait_value += 3;
     tonemap_signal_value += 3;
 
