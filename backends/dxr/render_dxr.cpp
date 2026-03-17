@@ -507,13 +507,10 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
     update_view_parameters(pos, dir, up, fovy);
 
-    auto start = high_resolution_clock::now();
     ID3D12CommandList *render_cmds = render_cmd_list.Get();
     cmd_queue->ExecuteCommandLists(1, &render_cmds);
     sync_gpu();
 
-    auto end = high_resolution_clock::now();
-    stats.render_time = duration_cast<nanoseconds>(end - start).count() * 1.0e-6;
 
 #ifdef ENABLE_OIDN
     // Denoise the frame

@@ -10,6 +10,10 @@
 #include "dxr_utils.h"
 #include "render_backend.h"
 
+#define OIDN_INTEROP_METHOD_HOST_BLOCKING 0
+#define OIDN_INTEROP_METHOD_DEVICE_ASYNC 1
+#define OIDN_INTEROP_METHOD OIDN_INTEROP_METHOD_DEVICE_ASYNC
+
 struct RenderDXR : RenderBackend {
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
     Microsoft::WRL::ComPtr<ID3D12Device5> device;
@@ -57,6 +61,12 @@ struct RenderDXR : RenderBackend {
 
 #ifdef REPORT_RAY_STATS
     std::vector<uint16_t> ray_counts;
+#endif
+
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+    #ifdef ENABLE_OIDN
+        oidn::SemaphoreRef oidn_semaphore;
+    #endif
 #endif
 
     RenderDXR(Microsoft::WRL::ComPtr<ID3D12Device5> device);
