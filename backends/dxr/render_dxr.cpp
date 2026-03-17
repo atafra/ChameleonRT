@@ -520,12 +520,27 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
     ID3D12CommandList *render_cmds = render_cmd_list.Get();
     cmd_queue->ExecuteCommandLists(1, &render_cmds);
-    sync_gpu();
-
 
 #ifdef ENABLE_OIDN
     // Denoise the frame
-    oidn_filter.execute();
+    #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_HOST_BLOCKING
+        sync_gpu();
+        oidn_filter.execute();
+    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+        // signal fence and let OIDN wait to execute asynchronously
+        const uint64_t oidn_fence_value = fence_value++;
+        cmd_queue->Signal(fence.Get(), oidn_fence_value);
+
+        oidn_device.waitSemaphoreAsync(oidn_semaphore, oidn_fence_value);
+        oidn_filter.executeAsync();
+        oidn_device.signalSemaphoreAsync(oidn_semaphore, oidn_fence_value + 1);
+
+        cmd_queue->Wait(fence.Get(), oidn_fence_value + 1);
+
+    #else
+        throw(std::logic_error("Invalid OIDN sync method"));
+    #endif  // OIDN_INTEROP_METHOD
+
 #endif
 
     // Tonemap the frame
