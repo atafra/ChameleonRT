@@ -77,8 +77,11 @@ RenderVulkan::~RenderVulkan()
     vkDestroyPipeline(device->logical_device(), tonemap_pipeline, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
 
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
     vkDestroySemaphore(device->logical_device(), timeline_semaphore, nullptr);
+#elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
+    vkDestroySemaphore(device->logical_device(), render_ready_semaphore, nullptr);
+    vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore, nullptr);
 #endif
 }
 
@@ -243,7 +246,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         record_command_buffers();
     }
 
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
     {
         // create Vulkan timeline semaphore
         VkSemaphoreCreateInfo semaphoreInfo = {};
@@ -263,7 +266,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &timeline_semaphore) !=
             VK_SUCCESS) {
             throw std::runtime_error(
-                "failed to create synchronization objects for a CUDA-Vulkan!");
+                "failed to create synchronization objects for a OIDN-Vulkan!");
         }
 
     #ifdef ENABLE_OIDN
@@ -290,6 +293,81 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr);
     #endif
+
+    }
+#elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
+    {
+        VkSemaphoreCreateInfo semaphoreInfo = {};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
+        exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+        exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+        exportSemaphoreCreateInfo.pNext = NULL;
+        semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
+        
+        if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore) != VK_SUCCESS || 
+            vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore) != VK_SUCCESS) {
+            throw std::runtime_error(
+                "failed to create synchronization objects for a OIDN-Vulkan!");
+        }
+
+        // TO DO: rewrite as lambda function
+        {
+            // register binary semaphores for OIDN interop
+            HANDLE win32_semaphore_handle;
+            VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
+            semaphoreGetWin32HandleInfoKHR.sType =
+                VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
+            semaphoreGetWin32HandleInfoKHR.pNext = NULL;
+            semaphoreGetWin32HandleInfoKHR.semaphore = render_ready_semaphore;
+            semaphoreGetWin32HandleInfoKHR.handleType =
+                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+            PFN_vkGetSemaphoreWin32HandleKHR fpGetSemaphoreWin32HandleKHR;
+            fpGetSemaphoreWin32HandleKHR =
+                (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
+                    device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
+            if (!fpGetSemaphoreWin32HandleKHR) {
+                throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
+            }
+            if (fpGetSemaphoreWin32HandleKHR(device->logical_device(),
+                                             &semaphoreGetWin32HandleInfoKHR,
+                                             &win32_semaphore_handle) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to retrieve Win32 handle for semaphore!");
+            }
+
+            oidn_wait_semaphore = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::OpaqueWin32,
+                win32_semaphore_handle,
+                nullptr);
+        }
+        {
+            // register binary semaphores for OIDN interop
+            HANDLE win32_semaphore_handle;
+            VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
+            semaphoreGetWin32HandleInfoKHR.sType =
+                VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
+            semaphoreGetWin32HandleInfoKHR.pNext = NULL;
+            semaphoreGetWin32HandleInfoKHR.semaphore = oidn_ready_semaphore;
+            semaphoreGetWin32HandleInfoKHR.handleType =
+                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+            PFN_vkGetSemaphoreWin32HandleKHR fpGetSemaphoreWin32HandleKHR;
+            fpGetSemaphoreWin32HandleKHR =
+                (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
+                    device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
+            if (!fpGetSemaphoreWin32HandleKHR) {
+                throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
+            }
+            if (fpGetSemaphoreWin32HandleKHR(device->logical_device(),
+                                             &semaphoreGetWin32HandleInfoKHR,
+                                             &win32_semaphore_handle) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to retrieve Win32 handle for semaphore!");
+            }
+
+            oidn_signal_semaphore = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::OpaqueWin32, win32_semaphore_handle, nullptr);
+        }
 
     }
 #endif
@@ -846,7 +924,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 
     // if timeline semaphore is used, the queue submit command is augmented with wait and
     // signal semaphore infos
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
     static uint64_t render_wait_value = 0;
     static uint64_t render_signal_value = 1;
 
@@ -873,6 +951,14 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     timelineInfo.pSignalSemaphoreValues = &render_signal_value;
 
     submit_info.pNext = &timelineInfo;
+#elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
+    std::vector<VkPipelineStageFlags> waitStages;
+    waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    submit_info.waitSemaphoreCount = 0;
+    submit_info.pWaitSemaphores = nullptr;
+    submit_info.pWaitDstStageMask = waitStages.data();
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &render_ready_semaphore;
 
 #endif
 
@@ -885,7 +971,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         // Denoise the frame
         oidn_filter.execute();
 
-    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
         render_wait_value += 3;
         render_signal_value += 3;
 
@@ -902,6 +988,15 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         static uint64_t tonemap_signal_value = 3;
         timelineInfo.pWaitSemaphoreValues = &tonemap_wait_value;
         timelineInfo.pSignalSemaphoreValues = &tonemap_signal_value;
+    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
+        oidn_device.waitSemaphoreAsync(oidn_wait_semaphore, 0);
+        oidn_filter.executeAsync();
+        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore, 0);        
+
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = &oidn_ready_semaphore;
+        submit_info.signalSemaphoreCount = 0;
+        submit_info.pSignalSemaphores = nullptr;
     #else
         throw(std::logic_error("Invalid OIDN sync method"));
     #endif  // OIDN_INTEROP_METHOD
@@ -919,7 +1014,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pCommandBuffers = &tonemap_cmd_buf;
     CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
 
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
     tonemap_wait_value += 3;
     tonemap_signal_value += 3;
 
