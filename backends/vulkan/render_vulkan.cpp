@@ -989,9 +989,9 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         timelineInfo.pWaitSemaphoreValues = &tonemap_wait_value;
         timelineInfo.pSignalSemaphoreValues = &tonemap_signal_value;
     #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
-        oidn_device.waitSemaphoreAsync(oidn_wait_semaphore, 0);
+        oidn_device.waitSemaphoreAsync(oidn_wait_semaphore);
         oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore, 0);        
+        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore);        
 
         submit_info.waitSemaphoreCount = 1;
         submit_info.pWaitSemaphores = &oidn_ready_semaphore;
