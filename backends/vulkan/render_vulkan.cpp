@@ -263,19 +263,29 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 #ifdef ENABLE_OIDN
 #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
     {
-        // create Vulkan timeline semaphore
-        VkSemaphoreCreateInfo semaphoreInfo = {};
-        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
-        exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+        static const wchar_t* semaphore_name = L"ChameleonRT_OIDNTimelineSemaphore";
 
-        VkSemaphoreTypeCreateInfo timelineCreateInfo;
+        // create Vulkan timeline semaphore exported as a named Win32 kernel object
+        VkSemaphoreTypeCreateInfo timelineCreateInfo = {};
         timelineCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
         timelineCreateInfo.pNext = NULL;
         timelineCreateInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
         timelineCreateInfo.initialValue = 0;
-        exportSemaphoreCreateInfo.pNext = &timelineCreateInfo;
+
+        VkExportSemaphoreWin32HandleInfoKHR exportWin32HandleInfo = {};
+        exportWin32HandleInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR;
+        exportWin32HandleInfo.pNext = &timelineCreateInfo;
+        exportWin32HandleInfo.pAttributes = nullptr;
+        exportWin32HandleInfo.dwAccess = GENERIC_ALL;
+        exportWin32HandleInfo.name = semaphore_name;
+
+        VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
+        exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+        exportSemaphoreCreateInfo.pNext = &exportWin32HandleInfo;
         exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+        VkSemaphoreCreateInfo semaphoreInfo = {};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
 
         if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &timeline_semaphore) !=
@@ -284,103 +294,69 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 "failed to create synchronization objects for a OIDN-Vulkan!");
         }
 
-        // register timeline semaphore for OIDN interop
-        HANDLE win32_semaphore_handle;
-        VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
-        semaphoreGetWin32HandleInfoKHR.sType =
-            VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
-        semaphoreGetWin32HandleInfoKHR.pNext = NULL;
-        semaphoreGetWin32HandleInfoKHR.semaphore = timeline_semaphore;
-        semaphoreGetWin32HandleInfoKHR.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
-
-        PFN_vkGetSemaphoreWin32HandleKHR fpGetSemaphoreWin32HandleKHR;
-        fpGetSemaphoreWin32HandleKHR = (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
-            device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
-        if (!fpGetSemaphoreWin32HandleKHR) {
-            throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
-        }
-        if (fpGetSemaphoreWin32HandleKHR(device->logical_device(), &semaphoreGetWin32HandleInfoKHR, &win32_semaphore_handle) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to retrieve Win32 handle for semaphore!");
-        }
-        
+        // register timeline semaphore for OIDN interop by Win32 name
         oidn_timeline_semaphore = oidn_device.newSemaphore(
-            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr);
+            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, nullptr, semaphore_name);
 
     }
 #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
     {
-        VkSemaphoreCreateInfo semaphoreInfo = {};
-        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
-        exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
-        exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
-        exportSemaphoreCreateInfo.pNext = NULL;
-        semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
-        
-        if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore) != VK_SUCCESS || 
-            vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore) != VK_SUCCESS) {
-            throw std::runtime_error(
-                "failed to create synchronization objects for a OIDN-Vulkan!");
-        }
+        static const wchar_t* render_ready_name = L"ChameleonRT_OIDNRenderReadySemaphore";
+        static const wchar_t* oidn_ready_name   = L"ChameleonRT_OIDNReadySemaphore";
 
-        // TO DO: rewrite as lambda function
+        // create render_ready_semaphore as a named Win32 kernel object
         {
-            // register binary semaphores for OIDN interop
-            HANDLE win32_semaphore_handle;
-            VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
-            semaphoreGetWin32HandleInfoKHR.sType =
-                VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
-            semaphoreGetWin32HandleInfoKHR.pNext = NULL;
-            semaphoreGetWin32HandleInfoKHR.semaphore = render_ready_semaphore;
-            semaphoreGetWin32HandleInfoKHR.handleType =
-                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+            VkExportSemaphoreWin32HandleInfoKHR exportWin32HandleInfo = {};
+            exportWin32HandleInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR;
+            exportWin32HandleInfo.pNext = NULL;
+            exportWin32HandleInfo.pAttributes = nullptr;
+            exportWin32HandleInfo.dwAccess = GENERIC_ALL;
+            exportWin32HandleInfo.name = render_ready_name;
 
-            PFN_vkGetSemaphoreWin32HandleKHR fpGetSemaphoreWin32HandleKHR;
-            fpGetSemaphoreWin32HandleKHR =
-                (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
-                    device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
-            if (!fpGetSemaphoreWin32HandleKHR) {
-                throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
-            }
-            if (fpGetSemaphoreWin32HandleKHR(device->logical_device(),
-                                             &semaphoreGetWin32HandleInfoKHR,
-                                             &win32_semaphore_handle) != VK_SUCCESS) {
-                throw std::runtime_error("Failed to retrieve Win32 handle for semaphore!");
-            }
+            VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
+            exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+            exportSemaphoreCreateInfo.pNext = &exportWin32HandleInfo;
+            exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
 
-            oidn_wait_semaphore = oidn_device.newSemaphore(
-                oidn::ExternalSemaphoreTypeFlag::OpaqueWin32,
-                win32_semaphore_handle,
-                nullptr);
+            VkSemaphoreCreateInfo semaphoreInfo = {};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
+
+            if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore) != VK_SUCCESS) {
+                throw std::runtime_error(
+                    "failed to create synchronization objects for a OIDN-Vulkan!");
+            }
         }
+
+        // create oidn_ready_semaphore as a named Win32 kernel object
         {
-            // register binary semaphores for OIDN interop
-            HANDLE win32_semaphore_handle;
-            VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
-            semaphoreGetWin32HandleInfoKHR.sType =
-                VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
-            semaphoreGetWin32HandleInfoKHR.pNext = NULL;
-            semaphoreGetWin32HandleInfoKHR.semaphore = oidn_ready_semaphore;
-            semaphoreGetWin32HandleInfoKHR.handleType =
-                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+            VkExportSemaphoreWin32HandleInfoKHR exportWin32HandleInfo = {};
+            exportWin32HandleInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR;
+            exportWin32HandleInfo.pNext = NULL;
+            exportWin32HandleInfo.pAttributes = nullptr;
+            exportWin32HandleInfo.dwAccess = GENERIC_ALL;
+            exportWin32HandleInfo.name = oidn_ready_name;
 
-            PFN_vkGetSemaphoreWin32HandleKHR fpGetSemaphoreWin32HandleKHR;
-            fpGetSemaphoreWin32HandleKHR =
-                (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
-                    device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
-            if (!fpGetSemaphoreWin32HandleKHR) {
-                throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
-            }
-            if (fpGetSemaphoreWin32HandleKHR(device->logical_device(),
-                                             &semaphoreGetWin32HandleInfoKHR,
-                                             &win32_semaphore_handle) != VK_SUCCESS) {
-                throw std::runtime_error("Failed to retrieve Win32 handle for semaphore!");
-            }
+            VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
+            exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+            exportSemaphoreCreateInfo.pNext = &exportWin32HandleInfo;
+            exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
 
-            oidn_signal_semaphore = oidn_device.newSemaphore(
-                oidn::ExternalSemaphoreTypeFlag::OpaqueWin32, win32_semaphore_handle, nullptr);
+            VkSemaphoreCreateInfo semaphoreInfo = {};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
+
+            if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore) != VK_SUCCESS) {
+                throw std::runtime_error(
+                    "failed to create synchronization objects for a OIDN-Vulkan!");
+            }
         }
+
+        // register binary semaphores for OIDN interop by Win32 name
+        oidn_wait_semaphore = oidn_device.newSemaphore(
+            oidn::ExternalSemaphoreTypeFlag::OpaqueWin32, nullptr, render_ready_name);
+        oidn_signal_semaphore = oidn_device.newSemaphore(
+            oidn::ExternalSemaphoreTypeFlag::OpaqueWin32, nullptr, oidn_ready_name);
 
     }
 #endif
