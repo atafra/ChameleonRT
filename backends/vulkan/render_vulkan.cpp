@@ -246,6 +246,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         record_command_buffers();
     }
 
+#ifdef ENABLE_OIDN
 #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
     {
         // create Vulkan timeline semaphore
@@ -269,7 +270,6 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 "failed to create synchronization objects for a OIDN-Vulkan!");
         }
 
-    #ifdef ENABLE_OIDN
         // register timeline semaphore for OIDN interop
         HANDLE win32_semaphore_handle;
         VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
@@ -292,7 +292,6 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr);
-    #endif
 
     }
 #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
@@ -372,7 +371,6 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     }
 #endif
 
-#ifdef ENABLE_OIDN
     {
         // Initialize the denoiser filter
         oidn_filter = oidn_device.newFilter("RT");
