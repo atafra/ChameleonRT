@@ -90,6 +90,20 @@ std::string RenderVulkan::name()
     return "Vulkan Ray Tracing";
 }
 
+#ifdef ENABLE_OIDN
+std::string RenderVulkan::get_oidn_interop_mode() {
+    #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_HOST_BLOCKING
+    return "Host Blocking";
+    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
+    return "Timeline Semaphore";
+    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
+    return "Binary Semaphore";
+    #else
+    return "Undefined";
+    #endif
+}
+#endif
+
 void RenderVulkan::initialize(const int fb_width, const int fb_height)
 {
 #ifdef ENABLE_OIDN

@@ -200,6 +200,9 @@ void run_app(const std::vector<std::string> &args,
     ArcballCamera camera(eye, center, up);
 
     const std::string rt_backend = renderer->name();
+#ifdef ENABLE_OIDN
+    const std::string oidn_interop_mode = renderer->get_oidn_interop_mode();
+#endif
     const std::string cpu_brand = get_cpu_brand();
     const std::string gpu_brand = display->gpu_brand();
     const std::string image_output = "chameleonrt.png";
@@ -338,6 +341,7 @@ void run_app(const std::vector<std::string> &args,
         ImGui::Text("Display Frontend: %s", display_frontend.c_str());
     #ifdef ENABLE_OIDN
         ImGui::Text("Denoiser: Intel(R) Open Image Denoise");
+        ImGui::Text("OIDN Interop Mode: %s", oidn_interop_mode.c_str());
     #endif
         ImGui::Text("%s", scene_info.c_str());
 

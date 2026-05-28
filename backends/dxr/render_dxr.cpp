@@ -67,6 +67,19 @@ std::string RenderDXR::name()
     return "DirectX Ray Tracing";
 }
 
+#ifdef ENABLE_OIDN
+std::string RenderDXR::get_oidn_interop_mode()
+{
+#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_HOST_BLOCKING
+    return "Host Blocking";
+#elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+    return "Device Async";
+#else
+    return "Undefined";
+#endif
+}
+#endif
+
 void RenderDXR::initialize(const int fb_width, const int fb_height)
 {
 #ifdef ENABLE_OIDN

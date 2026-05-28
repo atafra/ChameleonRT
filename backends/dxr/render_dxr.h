@@ -77,6 +77,10 @@ struct RenderDXR : RenderBackend {
 
     std::string name() override;
 
+    #ifdef ENABLE_OIDN
+    std::string get_oidn_interop_mode() override;
+    #endif
+
     void initialize(const int fb_width, const int fb_height) override;
 
     void set_scene(const Scene &scene) override;

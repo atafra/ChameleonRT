@@ -16,6 +16,13 @@ struct RenderBackend {
 
     virtual std::string name() = 0;
 
+    #ifdef ENABLE_OIDN
+    virtual std::string get_oidn_interop_mode()
+    {
+        return "Undefined";
+    }
+    #endif
+
     virtual void initialize(const int fb_width, const int fb_height) = 0;
 
     // TODO Probably should take the scene through a shared_ptr
