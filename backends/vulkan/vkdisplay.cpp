@@ -14,7 +14,13 @@
 #endif
 
 const static std::vector<std::string> logical_device_extensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_external_semaphore_win32"};
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+#ifdef _WIN32
+    "VK_KHR_external_semaphore_win32"
+#else
+    "VK_KHR_external_semaphore_fd"
+#endif
+};
 
 std::vector<std::string> get_instance_extensions(SDL_Window *window)
 {

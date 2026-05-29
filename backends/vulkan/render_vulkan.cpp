@@ -275,7 +275,11 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         timelineCreateInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
         timelineCreateInfo.initialValue = 0;
         exportSemaphoreCreateInfo.pNext = &timelineCreateInfo;
+#ifdef _WIN32
         exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+#else
+        exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
         semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
 
         if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &timeline_semaphore) !=
@@ -285,6 +289,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         }
 
         // register timeline semaphore for OIDN interop
+#ifdef _WIN32
         HANDLE win32_semaphore_handle;
         VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
         semaphoreGetWin32HandleInfoKHR.sType =
@@ -297,15 +302,37 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         fpGetSemaphoreWin32HandleKHR = (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
             device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
         if (!fpGetSemaphoreWin32HandleKHR) {
-            throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
+            throw std::runtime_error("Failed to retrieve vkGetSemaphoreWin32HandleKHR!");
         }
         if (fpGetSemaphoreWin32HandleKHR(device->logical_device(), &semaphoreGetWin32HandleInfoKHR, &win32_semaphore_handle) !=
             VK_SUCCESS) {
             throw std::runtime_error("Failed to retrieve Win32 handle for semaphore!");
         }
-        
+
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr);
+#else
+        int fd_semaphore_handle;
+        VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
+        semaphoreGetFdInfoKHR.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        semaphoreGetFdInfoKHR.pNext = NULL;
+        semaphoreGetFdInfoKHR.semaphore = timeline_semaphore;
+        semaphoreGetFdInfoKHR.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+        PFN_vkGetSemaphoreFdKHR fpGetSemaphoreFdKHR;
+        fpGetSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(
+            device->logical_device(), "vkGetSemaphoreFdKHR");
+        if (!fpGetSemaphoreFdKHR) {
+            throw std::runtime_error("Failed to retrieve vkGetSemaphoreFdKHR!");
+        }
+        if (fpGetSemaphoreFdKHR(device->logical_device(), &semaphoreGetFdInfoKHR, &fd_semaphore_handle) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("Failed to retrieve fd handle for semaphore!");
+        }
+
+        oidn_timeline_semaphore = oidn_device.newSemaphore(
+            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreFD, fd_semaphore_handle);
+#endif
 
     }
 #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
@@ -314,11 +341,15 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
         exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+#ifdef _WIN32
         exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+#else
+        exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
         exportSemaphoreCreateInfo.pNext = NULL;
         semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
-        
-        if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore) != VK_SUCCESS || 
+
+        if (vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore) != VK_SUCCESS ||
             vkCreateSemaphore(device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore) != VK_SUCCESS) {
             throw std::runtime_error(
                 "failed to create synchronization objects for a OIDN-Vulkan!");
@@ -327,6 +358,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         // TO DO: rewrite as lambda function
         {
             // register binary semaphores for OIDN interop
+#ifdef _WIN32
             HANDLE win32_semaphore_handle;
             VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
             semaphoreGetWin32HandleInfoKHR.sType =
@@ -341,7 +373,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
                     device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
             if (!fpGetSemaphoreWin32HandleKHR) {
-                throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
+                throw std::runtime_error("Failed to retrieve vkGetSemaphoreWin32HandleKHR!");
             }
             if (fpGetSemaphoreWin32HandleKHR(device->logical_device(),
                                              &semaphoreGetWin32HandleInfoKHR,
@@ -353,9 +385,33 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 oidn::ExternalSemaphoreTypeFlag::OpaqueWin32,
                 win32_semaphore_handle,
                 nullptr);
+#else
+            int fd_semaphore_handle;
+            VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
+            semaphoreGetFdInfoKHR.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+            semaphoreGetFdInfoKHR.pNext = NULL;
+            semaphoreGetFdInfoKHR.semaphore = render_ready_semaphore;
+            semaphoreGetFdInfoKHR.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+            PFN_vkGetSemaphoreFdKHR fpGetSemaphoreFdKHR;
+            fpGetSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(
+                device->logical_device(), "vkGetSemaphoreFdKHR");
+            if (!fpGetSemaphoreFdKHR) {
+                throw std::runtime_error("Failed to retrieve vkGetSemaphoreFdKHR!");
+            }
+            if (fpGetSemaphoreFdKHR(device->logical_device(),
+                                    &semaphoreGetFdInfoKHR,
+                                    &fd_semaphore_handle) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to retrieve fd handle for semaphore!");
+            }
+
+            oidn_wait_semaphore = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::OpaqueFD, fd_semaphore_handle);
+#endif
         }
         {
             // register binary semaphores for OIDN interop
+#ifdef _WIN32
             HANDLE win32_semaphore_handle;
             VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
             semaphoreGetWin32HandleInfoKHR.sType =
@@ -370,7 +426,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
                     device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
             if (!fpGetSemaphoreWin32HandleKHR) {
-                throw std::runtime_error("Failed to retrieve vkGetMemoryWin32HandleKHR!");
+                throw std::runtime_error("Failed to retrieve vkGetSemaphoreWin32HandleKHR!");
             }
             if (fpGetSemaphoreWin32HandleKHR(device->logical_device(),
                                              &semaphoreGetWin32HandleInfoKHR,
@@ -380,6 +436,29 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
             oidn_signal_semaphore = oidn_device.newSemaphore(
                 oidn::ExternalSemaphoreTypeFlag::OpaqueWin32, win32_semaphore_handle, nullptr);
+#else
+            int fd_semaphore_handle;
+            VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
+            semaphoreGetFdInfoKHR.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+            semaphoreGetFdInfoKHR.pNext = NULL;
+            semaphoreGetFdInfoKHR.semaphore = oidn_ready_semaphore;
+            semaphoreGetFdInfoKHR.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+            PFN_vkGetSemaphoreFdKHR fpGetSemaphoreFdKHR;
+            fpGetSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(
+                device->logical_device(), "vkGetSemaphoreFdKHR");
+            if (!fpGetSemaphoreFdKHR) {
+                throw std::runtime_error("Failed to retrieve vkGetSemaphoreFdKHR!");
+            }
+            if (fpGetSemaphoreFdKHR(device->logical_device(),
+                                    &semaphoreGetFdInfoKHR,
+                                    &fd_semaphore_handle) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to retrieve fd handle for semaphore!");
+            }
+
+            oidn_signal_semaphore = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::OpaqueFD, fd_semaphore_handle);
+#endif
         }
 
     }
@@ -417,7 +496,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
         oidn_filter.set("hdr", true);
         oidn_filter.set("quality", oidn::Quality::Balanced);
-        
+
         oidn_filter.commit();
         if (oidn_device.getError() != oidn::Error::None)
             throw std::runtime_error("Failed to commit OIDN filter.");
@@ -1003,7 +1082,7 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
         oidn_device.waitSemaphoreAsync(oidn_wait_semaphore);
         oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore);        
+        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore);
 
         submit_info.waitSemaphoreCount = 1;
         submit_info.pWaitSemaphores = &oidn_ready_semaphore;

@@ -59,17 +59,17 @@ const char* vkResultString(VkResult r) {
         case VK_INCOMPATIBLE_SHADER_BINARY_EXT: return "VK_INCOMPATIBLE_SHADER_BINARY_EXT";
         case VK_PIPELINE_BINARY_MISSING_KHR: return "VK_PIPELINE_BINARY_MISSING_KHR";
         case VK_ERROR_NOT_ENOUGH_SPACE_KHR: return "VK_ERROR_NOT_ENOUGH_SPACE_KHR";
-        default: 
+        default:
             return "Unknown Vulkan result";
     }
 }
 
 static const std::array<const char *, 1> validation_layers = {"VK_LAYER_KHRONOS_validation"};
 
-VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(  VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
-                                                VkDebugUtilsMessageTypeFlagsEXT message_type, 
-                                                const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, 
-                                                void* p_user_data) 
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(  VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+                                                VkDebugUtilsMessageTypeFlagsEXT message_type,
+                                                const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data,
+                                                void* p_user_data)
 {
     std::cout << "validation layer: " << p_callback_data->pMessage << std::endl;
     return VK_FALSE;
@@ -283,7 +283,7 @@ VkDeviceMemory Device::alloc(size_t nbytes, uint32_t type_filter, VkMemoryProper
         flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
         info.pNext = &flags;
     }
-    
+
     VkExportMemoryAllocateInfo export_info{};
     if (external_mem_types) {
         export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
@@ -486,11 +486,13 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
     #ifdef ENABLE_OIDN
     #ifdef _WIN32
         device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
     #else
         if (vk_external_mem_fd)
             device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
         if (vk_external_mem_dma_buf)
             device_extensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
     #endif
     #endif
 
