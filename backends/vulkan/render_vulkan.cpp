@@ -120,7 +120,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     std::memcpy(uuid.bytes, id_properties.deviceUUID, sizeof(uuid.bytes));
 
     // Initialize the denoiser device
-    oidn_device = oidn::newDevice(uuid);
+    oidn_device = oidn::newDevice(uuid); // FIXME: AMD seems to report bad UUID, use oidn::DeviceType::HIP instead
     if (oidn_device.getError() != oidn::Error::None)
         throw std::runtime_error("Failed to create OIDN device.");
     oidn_device.commit();
@@ -310,7 +310,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         }
 
         oidn_timeline_semaphore = oidn_device.newSemaphore(
-            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr);
+            oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr); // FIXME: AMD seems to require OpaqueWin32 instead
 #else
         int fd_semaphore_handle;
         VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
