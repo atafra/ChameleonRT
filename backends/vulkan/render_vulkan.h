@@ -106,6 +106,8 @@ struct RenderVulkan : RenderBackend {
 
     #ifdef ENABLE_OIDN
     std::string get_oidn_interop_mode() override;
+    bool set_oidn_interop_mode(const std::string &mode) const override;
+    std::vector<std::string> get_supported_oidn_interop_modes() override;
     #endif
 
     void initialize(const int fb_width, const int fb_height) override;

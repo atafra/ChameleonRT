@@ -102,6 +102,35 @@ std::string RenderVulkan::get_oidn_interop_mode() {
     return "Undefined";
     #endif
 }
+
+bool RenderVulkan::set_oidn_interop_mode(const std::string &mode) const
+{
+    // The OIDN interop mode is set at compile time via OIDN_INTEROP_METHOD
+    // and cannot be changed at runtime
+    return false;
+}
+
+std::vector<std::string> RenderVulkan::get_supported_oidn_interop_modes()
+{
+    std::vector<std::string> modes;
+
+    // Host blocking is always supported
+    modes.push_back("host_blocking");
+
+    // Check for timeline semaphore support
+    if (device->timeline_semaphore_supported()) {
+        modes.push_back("timeline_semaphore");
+    }
+
+    // Check for binary semaphore support
+    if (device->external_semaphore_supported()) {
+        modes.push_back("binary_semaphore");
+    }
+
+    return modes;
+}
+
+
 #endif
 
 void RenderVulkan::initialize(const int fb_width, const int fb_height)

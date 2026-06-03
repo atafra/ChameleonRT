@@ -189,7 +189,9 @@ Device::Device(Device &&d)
       queue(d.queue),
       mem_props(d.mem_props),
       as_props(d.as_props),
-      rt_pipeline_props(d.rt_pipeline_props)
+      rt_pipeline_props(d.rt_pipeline_props),
+      vk_timeline_semaphore_supported(d.vk_timeline_semaphore_supported),
+      vk_external_semaphore_supported(d.vk_external_semaphore_supported)
 {
     d.vk_instance = VK_NULL_HANDLE;
     d.vk_debug_messenger = VK_NULL_HANDLE;
@@ -212,6 +214,8 @@ Device &Device::operator=(Device &&d)
     mem_props = d.mem_props;
     as_props = d.as_props;
     rt_pipeline_props = d.rt_pipeline_props;
+    vk_timeline_semaphore_supported = d.vk_timeline_semaphore_supported;
+    vk_external_semaphore_supported = d.vk_external_semaphore_supported;
 
     d.vk_instance = VK_NULL_HANDLE;
     d.vk_debug_messenger = VK_NULL_HANDLE;
@@ -317,6 +321,16 @@ const VkPhysicalDeviceRayTracingPipelinePropertiesKHR &Device::raytracing_pipeli
     const
 {
     return rt_pipeline_props;
+}
+
+bool Device::timeline_semaphore_supported() const
+{
+    return vk_timeline_semaphore_supported;
+}
+
+bool Device::external_semaphore_supported() const
+{
+    return vk_external_semaphore_supported;
 }
 
 void Device::make_instance(const std::vector<std::string> &extensions)
@@ -471,9 +485,14 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
     rt_pipeline_features.rayTracingPipeline = true;
     rt_pipeline_features.pNext = &as_features;
 
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline_semaphore_features = {};
+    timeline_semaphore_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+    timeline_semaphore_features.timelineSemaphore = VK_TRUE;
+    timeline_semaphore_features.pNext = &rt_pipeline_features;
+
     VkPhysicalDeviceFeatures2 device_features = {};
     device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    device_features.pNext = &rt_pipeline_features;
+    device_features.pNext = &timeline_semaphore_features;
 
     std::vector<const char *> device_extensions = {
         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
@@ -518,6 +537,26 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
     CHECK_VULKAN(vkCreateDevice(vk_physical_device, &create_info, nullptr, &device));
 
     vkGetDeviceQueue(device, graphics_queue_index, 0, &queue);
+
+    // Query timeline semaphore support
+    VkPhysicalDeviceTimelineSemaphoreFeatures query_timeline_features = {};
+    query_timeline_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+    VkPhysicalDeviceFeatures2 query_features = {};
+    query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    query_features.pNext = &query_timeline_features;
+    vkGetPhysicalDeviceFeatures2(vk_physical_device, &query_features);
+    vk_timeline_semaphore_supported = query_timeline_features.timelineSemaphore == VK_TRUE;
+
+    // Check for external semaphore support
+    #ifdef ENABLE_OIDN
+    #ifdef _WIN32
+        vk_external_semaphore_supported = true; // Windows always has Win32 semaphore support
+    #else
+        vk_external_semaphore_supported = true; // Linux/Unix always has FD semaphore support
+    #endif
+    #else
+        vk_external_semaphore_supported = false;
+    #endif
 }
 
 VkBufferCreateInfo Buffer::create_info(size_t nbytes, VkBufferUsageFlags usage)

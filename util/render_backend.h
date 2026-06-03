@@ -21,6 +21,16 @@ struct RenderBackend {
     {
         return "Undefined";
     }
+
+    virtual bool set_oidn_interop_mode(const std::string& mode) const
+    {
+        return false;
+    }
+
+    virtual std::vector<std::string> get_supported_oidn_interop_modes()
+    {
+        return {};
+    }
     #endif
 
     virtual void initialize(const int fb_width, const int fb_height) = 0;

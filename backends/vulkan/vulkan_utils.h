@@ -59,6 +59,8 @@ class Device {
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt_pipeline_props = {};
     bool vk_external_mem_fd = false;
     bool vk_external_mem_dma_buf = false;
+    bool vk_timeline_semaphore_supported = false;
+    bool vk_external_semaphore_supported = false;
 
 public:
     Device(const std::vector<std::string> &instance_extensions = std::vector<std::string>{},
@@ -96,6 +98,9 @@ public:
     acceleration_structure_properties() const;
     const VkPhysicalDeviceRayTracingPipelinePropertiesKHR &raytracing_pipeline_properties()
         const;
+
+    bool timeline_semaphore_supported() const;
+    bool external_semaphore_supported() const;
 
 private:
     void make_instance(const std::vector<std::string> &extensions);

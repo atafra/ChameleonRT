@@ -201,7 +201,9 @@ void run_app(const std::vector<std::string> &args,
 
     const std::string rt_backend = renderer->name();
 #ifdef ENABLE_OIDN
-    const std::string oidn_interop_mode = renderer->get_oidn_interop_mode();
+    std::string oidn_interop_mode = renderer->get_oidn_interop_mode();
+    std::vector<std::string> supported_oidn_modes =
+        renderer->get_supported_oidn_interop_modes();
 #endif
     const std::string cpu_brand = get_cpu_brand();
     const std::string gpu_brand = display->gpu_brand();
@@ -341,15 +343,21 @@ void run_app(const std::vector<std::string> &args,
         ImGui::Text("Display Frontend: %s", display_frontend.c_str());
     #ifdef ENABLE_OIDN
         ImGui::Text("Denoiser: Intel(R) Open Image Denoise");
-        ImGui::Text("OIDN Interop Mode: %s", oidn_interop_mode.c_str());
     #endif
         ImGui::Text("%s", scene_info.c_str());
 
         if (ImGui::Button("Save Image")) {
             save_image = true;
         }
+        ImGui::End();
+
+#ifdef ENABLE_OIDN
+        ImGui::Begin("OIDN");
+        ImGui::Text("Interop Mode: %s", oidn_interop_mode.c_str());
 
         ImGui::End();
+#endif
+
         ImGui::Render();
 
         if (!resizing)
