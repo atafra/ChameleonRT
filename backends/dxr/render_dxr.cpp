@@ -68,15 +68,65 @@ std::string RenderDXR::name()
 }
 
 #ifdef ENABLE_OIDN
+namespace {
+
+const char *oidn_interop_mode_name(RenderDXR::OIDNInteropMode mode)
+{
+    switch (mode) {
+    case RenderDXR::OIDNInteropMode::HostBlocking:
+        return "host_blocking";
+    case RenderDXR::OIDNInteropMode::DeviceAsync:
+        return "device_async";
+    }
+
+    return "Undefined";
+}
+
+} // namespace
+
 std::string RenderDXR::get_oidn_interop_mode()
 {
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_HOST_BLOCKING
-    return "Host Blocking";
-#elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
-    return "Device Async";
-#else
-    return "Undefined";
-#endif
+    return oidn_interop_mode_name(oidn_interop_mode);
+}
+
+bool RenderDXR::set_oidn_interop_mode(const std::string &mode)
+{
+    OIDNInteropMode new_mode;
+
+    if (mode == "host_blocking") {
+        new_mode = OIDNInteropMode::HostBlocking;
+    } else if (mode == "device_async") {
+        if (!oidn_device_async_supported) {
+            std::cerr << "OIDN interop mode '" << mode
+                      << "' is not supported by this DXR device.\n";
+            return false;
+        }
+        new_mode = OIDNInteropMode::DeviceAsync;
+    } else {
+        std::cerr << "OIDN interop mode '" << mode
+                  << "' is not supported by the DXR backend.\n";
+        return false;
+    }
+
+    if (oidn_interop_mode != new_mode) {
+        oidn_interop_mode = new_mode;
+        std::cout << "OIDN interop mode changed to: "
+                  << oidn_interop_mode_name(oidn_interop_mode) << "\n";
+    }
+
+    return true;
+}
+
+std::vector<std::string> RenderDXR::get_supported_oidn_interop_modes()
+{
+    std::vector<std::string> modes;
+    modes.push_back("host_blocking");
+
+    if (oidn_device_async_supported) {
+        modes.push_back("device_async");
+    }
+
+    return modes;
 }
 #endif
 
@@ -195,7 +245,8 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
         if (oidn_device.getError() != oidn::Error::None)
             throw std::runtime_error("Failed to commit OIDN filter.");
 
-    #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+        oidn_device_async_supported = false;
+
         // Register D3D fence for OIDN interop
         HANDLE win32_fence_handle;
         CHECK_ERR(device->CreateSharedHandle(
@@ -203,7 +254,20 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
 
         oidn_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::D3D12Fence, win32_fence_handle, nullptr);
-    #endif
+
+        oidn_device_async_supported = oidn_device.getError() == oidn::Error::None;
+        if (oidn_interop_mode == OIDNInteropMode::DeviceAsync && !oidn_device_async_supported) {
+            std::cerr << "OIDN interop mode '"
+                      << oidn_interop_mode_name(oidn_interop_mode)
+                      << "' is not supported by this DXR device; using 'host_blocking'.\n";
+            oidn_interop_mode = OIDNInteropMode::HostBlocking;
+        }
+
+        if (!oidn_interop_mode_initialized) {
+            std::cout << "OIDN interop mode initialized: "
+                      << oidn_interop_mode_name(oidn_interop_mode) << "\n";
+            oidn_interop_mode_initialized = true;
+        }
 
     }
 #endif
@@ -537,10 +601,14 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
 #ifdef ENABLE_OIDN
     // Denoise the frame
-    #if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_HOST_BLOCKING
+    if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
         sync_gpu();
         oidn_filter.execute();
-    #elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
+    } else if (oidn_interop_mode == OIDNInteropMode::DeviceAsync) {
+        if (!oidn_device_async_supported) {
+            throw(std::logic_error("Device async OIDN interop is not initialized"));
+        }
+
         // signal fence and let OIDN wait to execute asynchronously
         const uint64_t oidn_fence_value = fence_value;
         fence_value += 2;
@@ -552,9 +620,9 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
         cmd_queue->Wait(fence.Get(), oidn_fence_value + 1);
 
-    #else
+    } else {
         throw(std::logic_error("Invalid OIDN sync method"));
-    #endif  // OIDN_INTEROP_METHOD
+    }
 
 #endif
 

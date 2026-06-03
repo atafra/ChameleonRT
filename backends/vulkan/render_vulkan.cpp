@@ -98,7 +98,7 @@ std::string RenderVulkan::name()
 #ifdef ENABLE_OIDN
 namespace {
 
-const char *oidn_interop_mode_name(RenderVulkan::OIDNInteropMode mode)
+const char* oidn_interop_mode_name(RenderVulkan::OIDNInteropMode mode)
 {
     switch (mode) {
     case RenderVulkan::OIDNInteropMode::HostBlocking:
@@ -122,7 +122,7 @@ bool RenderVulkan::set_oidn_interop_mode(const std::string &mode)
 {
     OIDNInteropMode new_mode;
 
-    if (mode == "host_blocking" || mode == "Host Blocking") {
+    if (mode == "host_blocking") {
         new_mode = OIDNInteropMode::HostBlocking;
     } else if (mode == "timeline_semaphore" || mode == "Timeline Semaphore") {
         if (!device->timeline_semaphore_supported()) {
@@ -131,7 +131,7 @@ bool RenderVulkan::set_oidn_interop_mode(const std::string &mode)
             return false;
         }
         new_mode = OIDNInteropMode::TimelineSemaphore;
-    } else if (mode == "binary_semaphore" || mode == "Binary Semaphore") {
+    } else if (mode == "binary_semaphore") {
         if (!device->external_semaphore_supported()) {
             std::cerr << "OIDN interop mode '" << mode
                       << "' is not supported by this Vulkan device.\n";

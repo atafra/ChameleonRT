@@ -353,13 +353,21 @@ void run_app(const std::vector<std::string> &args,
 
 #ifdef ENABLE_OIDN
         ImGui::Begin("OIDN");
-        ImGui::Text("Interop Mode: %s", oidn_interop_mode.c_str());
         // List supported interop modes and allow switching between them at runtime
-        for (const auto& mode : supported_oidn_modes) {
-            if (ImGui::Selectable(mode.c_str(), mode == oidn_interop_mode)) {
-                oidn_interop_mode = mode;
-                renderer->set_oidn_interop_mode(mode);
+        const auto current_it = std::find(supported_oidn_modes.begin(), supported_oidn_modes.end(), oidn_interop_mode);
+        int current_idx = current_it != supported_oidn_modes.end() ? static_cast<int>(current_it - supported_oidn_modes.begin()) : 0;
+        ImGui::Text("Interop Mode");
+        if (ImGui::BeginCombo("##interop_mode", oidn_interop_mode.c_str())) {
+            for (int i = 0; i < static_cast<int>(supported_oidn_modes.size()); ++i) {
+                const bool selected = (i == current_idx);
+                if (ImGui::Selectable(supported_oidn_modes[i].c_str(), selected)) {
+                    oidn_interop_mode = supported_oidn_modes[i];
+                    renderer->set_oidn_interop_mode(oidn_interop_mode);
+                }
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
             }
+            ImGui::EndCombo();
         }
         ImGui::End();
 #endif

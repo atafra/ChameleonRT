@@ -10,11 +10,11 @@
 #include "dxr_utils.h"
 #include "render_backend.h"
 
-#define OIDN_INTEROP_METHOD_HOST_BLOCKING 0
-#define OIDN_INTEROP_METHOD_DEVICE_ASYNC 1
-#define OIDN_INTEROP_METHOD OIDN_INTEROP_METHOD_DEVICE_ASYNC
-
 struct RenderDXR : RenderBackend {
+    enum class OIDNInteropMode {
+        HostBlocking,
+        DeviceAsync };
+
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
     Microsoft::WRL::ComPtr<ID3D12Device5> device;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> cmd_queue;
@@ -57,16 +57,14 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer denoise_buffer;
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
+    oidn::SemaphoreRef oidn_semaphore;
+    OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
+    bool oidn_interop_mode_initialized = false;
+    bool oidn_device_async_supported = false;
 #endif
 
 #ifdef REPORT_RAY_STATS
     std::vector<uint16_t> ray_counts;
-#endif
-
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_DEVICE_ASYNC
-    #ifdef ENABLE_OIDN
-        oidn::SemaphoreRef oidn_semaphore;
-    #endif
 #endif
 
     RenderDXR(Microsoft::WRL::ComPtr<ID3D12Device5> device);
@@ -79,6 +77,8 @@ struct RenderDXR : RenderBackend {
 
     #ifdef ENABLE_OIDN
     std::string get_oidn_interop_mode() override;
+    bool set_oidn_interop_mode(const std::string &mode) override;
+    std::vector<std::string> get_supported_oidn_interop_modes() override;
     #endif
 
     void initialize(const int fb_width, const int fb_height) override;
