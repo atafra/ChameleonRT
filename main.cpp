@@ -27,6 +27,9 @@ const std::string USAGE =
     "\t-camera <n>            If the scene contains multiple cameras, specify which\n"
     "\t                       should be used. Defaults to the first camera\n"
     "\t-img <x> <y>           Specify the window dimensions. Defaults to 1280x720\n"
+#ifdef ENABLE_OIDN
+    "\t-oidn-interop <mode>  Specify the OIDN interop mode\n"
+#endif
     "\n";
 
 int win_width = 1280;
@@ -122,6 +125,7 @@ void run_app(const std::vector<std::string> &args,
     float fov_y = 65.f;
     size_t camera_id = 0;
     std::string validation_img_prefix;
+    std::string oidn_interop_mode_arg;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "-eye") {
             eye.x = std::stof(args[++i]);
@@ -147,6 +151,8 @@ void run_app(const std::vector<std::string> &args,
             validation_img_prefix = args[++i];
         } else if (args[i] == "-img") {
             i += 2;
+        } else if (args[i] == "-oidn-interop") {
+            oidn_interop_mode_arg = args[++i];
         } else if (args[i][0] != '-') {
             scene_file = args[i];
             canonicalize_path(scene_file);
@@ -163,6 +169,37 @@ void run_app(const std::vector<std::string> &args,
         std::cout << "Error: No model file specified\n" << USAGE;
         std::exit(1);
     }
+
+#ifdef ENABLE_OIDN
+    std::vector<std::string> supported_oidn_modes =
+        renderer->get_supported_oidn_interop_modes();
+    if (!oidn_interop_mode_arg.empty()) {
+        const auto oidn_mode_it = std::find(supported_oidn_modes.begin(),
+                                            supported_oidn_modes.end(),
+                                            oidn_interop_mode_arg);
+        if (oidn_mode_it == supported_oidn_modes.end()) {
+            std::cerr << "Error: Invalid OIDN interop mode '" << oidn_interop_mode_arg << "'";
+            if (!supported_oidn_modes.empty()) {
+                std::cerr << ". Supported modes:";
+                for (const std::string &mode : supported_oidn_modes) {
+                    std::cerr << " " << mode;
+                }
+            }
+            std::cerr << "\n";
+            std::exit(1);
+        }
+        if (!renderer->set_oidn_interop_mode(oidn_interop_mode_arg)) {
+            std::cerr << "Error: Failed to set OIDN interop mode '" << oidn_interop_mode_arg
+                      << "'\n";
+            std::exit(1);
+        }
+    }
+#else
+    if (!oidn_interop_mode_arg.empty()) {
+        std::cerr << "Error: OIDN interop mode was specified, but OIDN support is disabled\n";
+        std::exit(1);
+    }
+#endif
 
     display->resize(win_width, win_height);
     renderer->initialize(win_width, win_height);
@@ -202,8 +239,6 @@ void run_app(const std::vector<std::string> &args,
     const std::string rt_backend = renderer->name();
 #ifdef ENABLE_OIDN
     std::string oidn_interop_mode = renderer->get_oidn_interop_mode();
-    std::vector<std::string> supported_oidn_modes =
-        renderer->get_supported_oidn_interop_modes();
 #endif
     const std::string cpu_brand = get_cpu_brand();
     const std::string gpu_brand = display->gpu_brand();
