@@ -354,7 +354,13 @@ void run_app(const std::vector<std::string> &args,
 #ifdef ENABLE_OIDN
         ImGui::Begin("OIDN");
         ImGui::Text("Interop Mode: %s", oidn_interop_mode.c_str());
-
+        // List supported interop modes and allow switching between them at runtime
+        for (const auto& mode : supported_oidn_modes) {
+            if (ImGui::Selectable(mode.c_str(), mode == oidn_interop_mode)) {
+                oidn_interop_mode = mode;
+                renderer->set_oidn_interop_mode(mode);
+            }
+        }
         ImGui::End();
 #endif
 

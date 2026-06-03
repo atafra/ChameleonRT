@@ -11,11 +11,6 @@
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
 
-#define OIDN_INTEROP_METHOD_HOST_BLOCKING 0
-#define OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE 1
-#define OIDN_INTEROP_METHOD_BINARY_SEMAPHORE 2 // FIXME: AMD fails with VK_ERROR_UNKNOWN
-#define OIDN_INTEROP_METHOD OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
-
 struct HitGroupParams {
     uint64_t vert_buf = 0;
     uint64_t idx_buf = 0;
@@ -27,6 +22,12 @@ struct HitGroupParams {
 };
 
 struct RenderVulkan : RenderBackend {
+
+    enum class OIDNInteropMode {
+        HostBlocking,
+        TimelineSemaphore,
+        BinarySemaphore };
+
     std::shared_ptr<vkrt::Device> device;
 
     std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params;
@@ -38,6 +39,7 @@ struct RenderVulkan : RenderBackend {
     std::shared_ptr<vkrt::Buffer> denoise_buffer;
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
+    OIDNInteropMode oidn_interop_mode = OIDNInteropMode::BinarySemaphore;
 #endif
 
 #ifdef REPORT_RAY_STATS
@@ -77,18 +79,19 @@ struct RenderVulkan : RenderBackend {
 
     VkFence fence = VK_NULL_HANDLE;
 
-#if OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_TIMELINE_SEMAPHORE
-    VkSemaphore timeline_semaphore;
-    #ifdef ENABLE_OIDN
-        oidn::SemaphoreRef oidn_timeline_semaphore;
-    #endif
-#elif OIDN_INTEROP_METHOD == OIDN_INTEROP_METHOD_BINARY_SEMAPHORE
-    VkSemaphore render_ready_semaphore;
-    VkSemaphore oidn_ready_semaphore;
 #ifdef ENABLE_OIDN
+    VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
+    oidn::SemaphoreRef oidn_timeline_semaphore;
+    VkSemaphore render_ready_semaphore = VK_NULL_HANDLE;
+    VkSemaphore oidn_ready_semaphore = VK_NULL_HANDLE;
     oidn::SemaphoreRef oidn_wait_semaphore; // wait for render ready
     oidn::SemaphoreRef oidn_signal_semaphore; // signal OIDN ready
-#endif
+    uint64_t timeline_render_wait_value = 0;
+    uint64_t timeline_render_signal_value = 1;
+    uint64_t timeline_oidn_wait_value = 1;
+    uint64_t timeline_oidn_signal_value = 2;
+    uint64_t timeline_tonemap_wait_value = 2;
+    uint64_t timeline_tonemap_signal_value = 3;
 #endif
 
     VkQueryPool timing_query_pool;
@@ -106,7 +109,7 @@ struct RenderVulkan : RenderBackend {
 
     #ifdef ENABLE_OIDN
     std::string get_oidn_interop_mode() override;
-    bool set_oidn_interop_mode(const std::string &mode) const override;
+    bool set_oidn_interop_mode(const std::string &mode) override;
     std::vector<std::string> get_supported_oidn_interop_modes() override;
     #endif
 

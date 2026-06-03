@@ -22,7 +22,7 @@ struct RenderBackend {
         return "Undefined";
     }
 
-    virtual bool set_oidn_interop_mode(const std::string& mode) const
+    virtual bool set_oidn_interop_mode(const std::string& mode)
     {
         return false;
     }
