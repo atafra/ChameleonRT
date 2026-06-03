@@ -40,6 +40,7 @@ struct RenderVulkan : RenderBackend {
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
     OIDNInteropMode oidn_interop_mode = OIDNInteropMode::BinarySemaphore;
+    bool oidn_interop_mode_initialized = false;
 #endif
 
 #ifdef REPORT_RAY_STATS

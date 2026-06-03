@@ -96,43 +96,60 @@ std::string RenderVulkan::name()
 }
 
 #ifdef ENABLE_OIDN
-std::string RenderVulkan::get_oidn_interop_mode() {
-    switch (oidn_interop_mode) {
-    case OIDNInteropMode::HostBlocking:
+namespace {
+
+const char *oidn_interop_mode_name(RenderVulkan::OIDNInteropMode mode)
+{
+    switch (mode) {
+    case RenderVulkan::OIDNInteropMode::HostBlocking:
         return "host_blocking";
-    case OIDNInteropMode::TimelineSemaphore:
+    case RenderVulkan::OIDNInteropMode::TimelineSemaphore:
         return "timeline_semaphore";
-    case OIDNInteropMode::BinarySemaphore:
+    case RenderVulkan::OIDNInteropMode::BinarySemaphore:
         return "binary_semaphore";
     }
 
     return "Undefined";
 }
 
+} // namespace
+
+std::string RenderVulkan::get_oidn_interop_mode() {
+    return oidn_interop_mode_name(oidn_interop_mode);
+}
+
 bool RenderVulkan::set_oidn_interop_mode(const std::string &mode)
 {
+    OIDNInteropMode new_mode;
+
     if (mode == "host_blocking" || mode == "Host Blocking") {
-        oidn_interop_mode = OIDNInteropMode::HostBlocking;
-        return true;
-    }
-
-    if (mode == "timeline_semaphore" || mode == "Timeline Semaphore") {
+        new_mode = OIDNInteropMode::HostBlocking;
+    } else if (mode == "timeline_semaphore" || mode == "Timeline Semaphore") {
         if (!device->timeline_semaphore_supported()) {
+            std::cerr << "OIDN interop mode '" << mode
+                      << "' is not supported by this Vulkan device.\n";
             return false;
         }
-        oidn_interop_mode = OIDNInteropMode::TimelineSemaphore;
-        return true;
-    }
-
-    if (mode == "binary_semaphore" || mode == "Binary Semaphore") {
+        new_mode = OIDNInteropMode::TimelineSemaphore;
+    } else if (mode == "binary_semaphore" || mode == "Binary Semaphore") {
         if (!device->external_semaphore_supported()) {
+            std::cerr << "OIDN interop mode '" << mode
+                      << "' is not supported by this Vulkan device.\n";
             return false;
         }
-        oidn_interop_mode = OIDNInteropMode::BinarySemaphore;
-        return true;
+        new_mode = OIDNInteropMode::BinarySemaphore;
+    } else {
+        std::cerr << "Unknown OIDN interop mode '" << mode << "'.\n";
+        return false;
     }
 
-    return false;
+    if (oidn_interop_mode != new_mode) {
+        oidn_interop_mode = new_mode;
+        std::cout << "OIDN interop mode changed to: "
+                  << oidn_interop_mode_name(oidn_interop_mode) << "\n";
+    }
+
+    return true;
 }
 
 std::vector<std::string> RenderVulkan::get_supported_oidn_interop_modes()
@@ -180,6 +197,26 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     oidn_device.commit();
     if (oidn_device.getError() != oidn::Error::None)
         throw std::runtime_error("Failed to commit OIDN device.");
+
+    if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore &&
+        !device->timeline_semaphore_supported()) {
+        std::cerr << "OIDN interop mode '"
+                  << oidn_interop_mode_name(oidn_interop_mode)
+                  << "' is not supported by this Vulkan device; using 'host_blocking'.\n";
+        oidn_interop_mode = OIDNInteropMode::HostBlocking;
+    } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore &&
+               !device->external_semaphore_supported()) {
+        std::cerr << "OIDN interop mode '"
+                  << oidn_interop_mode_name(oidn_interop_mode)
+                  << "' is not supported by this Vulkan device; using 'host_blocking'.\n";
+        oidn_interop_mode = OIDNInteropMode::HostBlocking;
+    }
+
+    if (!oidn_interop_mode_initialized) {
+        std::cout << "OIDN interop mode initialized: "
+                  << oidn_interop_mode_name(oidn_interop_mode) << "\n";
+        oidn_interop_mode_initialized = true;
+    }
 
     // Find a compatible external memory handle type
     const auto oidn_external_mem_types = oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
