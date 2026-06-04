@@ -674,6 +674,14 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     // The in-flight frame slot whose command lists / readback buffers / timing
     // queries we use this frame.
     const uint32_t slot = frame_slot;
+    const uint32_t prev_slot = (slot + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+
+    // Reclaim this slot's resources. Its previous frame's work was submitted
+    // MAX_FRAMES_IN_FLIGHT render() calls ago, so this wait is almost always
+    // already satisfied and does not stall the host on work we are about to submit.
+    if (slot_submitted[slot]) {
+        wait_for_fence_value(slot_fence_value[slot]);
+    }
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     frame_diagnostics_active = frame_id < 5;
@@ -795,17 +803,69 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         DXR_FRAME_DIAGNOSTIC("readback command list submitted");
     }
 
-    // Wait for the image readback commands to complete as well
-    DXR_FRAME_DIAGNOSTIC("final frame GPU sync begin");
-    sync_gpu();
-    DXR_FRAME_DIAGNOSTIC("final frame GPU sync end");
-
+    // Signal this slot's fence once all of its submissions complete. We do not
+    // drain the queue here; the host only blocks when it actually needs this
+    // slot's framebuffer, or later when reclaiming the slot / reading its stats.
+    slot_fence_value[slot] = fence_value++;
+    CHECK_ERR(cmd_queue->Signal(fence.Get(), slot_fence_value[slot]));
     slot_submitted[slot] = true;
+    DXR_FRAME_DIAGNOSTIC("slot fence signaled");
 
-    // Read back the timestamps for DispatchRays to compute the true time spent rendering
-    {
+    if (need_readback) {
+        // The displayed / saved framebuffer must be current, so wait on this
+        // slot's fence (rather than draining the whole queue) before copying it.
+        DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback begin");
+        wait_for_fence_value(slot_fence_value[slot]);
+
+        // Copy out the rendered image from the persistently mapped readback buffer.
+        // We may have needed some padding for the readback buffer, so we might have to read
+        // row by row.
+        if (render_target.linear_row_pitch() ==
+            render_target.dims().x * render_target.pixel_size()) {
+            std::memcpy(img.data(), img_readback_mapping[slot], img_readback_buf[slot].size());
+        } else {
+            uint8_t *buf = img_readback_mapping[slot];
+            for (uint32_t y = 0; y < render_target.dims().y; ++y) {
+                std::memcpy(img.data() + y * render_target.dims().x,
+                            buf + y * render_target.linear_row_pitch(),
+                            render_target.dims().x * render_target.pixel_size());
+            }
+        }
+        DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback end");
+
+#ifdef REPORT_RAY_STATS
+        if (collect_ray_stats) {
+            if (ray_stats.linear_row_pitch() == ray_stats.dims().x * ray_stats.pixel_size()) {
+                std::memcpy(ray_counts.data(),
+                            ray_stats_readback_mapping[slot],
+                            ray_stats_readback_buf[slot].size());
+            } else {
+                uint8_t *buf = ray_stats_readback_mapping[slot];
+                for (uint32_t y = 0; y < ray_stats.dims().y; ++y) {
+                    std::memcpy(ray_counts.data() + y * ray_stats.dims().x,
+                                buf + y * ray_stats.linear_row_pitch(),
+                                ray_stats.dims().x * ray_stats.pixel_size());
+                }
+            }
+
+            slot_total_rays[slot] = std::accumulate(
+                ray_counts.begin(),
+                ray_counts.end(),
+                uint64_t(0),
+                [](const uint64_t &total, const uint16_t &c) { return total + c; });
+        } else {
+            slot_total_rays[slot] = 0;
+        }
+#endif
+    }
+
+    // Read back the statistics for the previously completed frame slot. The
+    // results lag the displayed frame by one render() call, which lets the host
+    // avoid stalling on the GPU work that was just submitted.
+    if (slot_submitted[prev_slot]) {
         DXR_FRAME_DIAGNOSTIC("timestamp readback begin");
-        const uint64_t *timestamps = query_resolve_mapping[slot];
+        wait_for_fence_value(slot_fence_value[prev_slot]);
+        const uint64_t *timestamps = query_resolve_mapping[prev_slot];
 
         stats.frame_time = elapsed_timestamp_ms(timestamps,
                                                 timestamp_freq,
@@ -859,51 +919,14 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
                                       offset_ms(TIMING_QUERY_FRAME_END)});
         }
 
+#ifdef REPORT_RAY_STATS
+        stats.rays_per_second =
+            stats.render_time > 0.f
+                ? slot_total_rays[prev_slot] / (stats.render_time * 1.0e-3)
+                : 0.0;
+#endif
         DXR_FRAME_DIAGNOSTIC("timestamp readback end");
     }
-
-    if (need_readback) {
-        DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback begin");
-        // Copy out the rendered image from the persistently mapped readback buffer.
-        // We may have needed some padding for the readback buffer, so we might have to read
-        // row by row.
-        if (render_target.linear_row_pitch() ==
-            render_target.dims().x * render_target.pixel_size()) {
-            std::memcpy(img.data(), img_readback_mapping[slot], img_readback_buf[slot].size());
-        } else {
-            uint8_t *buf = img_readback_mapping[slot];
-            for (uint32_t y = 0; y < render_target.dims().y; ++y) {
-                std::memcpy(img.data() + y * render_target.dims().x,
-                            buf + y * render_target.linear_row_pitch(),
-                            render_target.dims().x * render_target.pixel_size());
-            }
-        }
-        DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback end");
-    }
-
-#ifdef REPORT_RAY_STATS
-    if (collect_ray_stats) {
-        if (ray_stats.linear_row_pitch() == ray_stats.dims().x * ray_stats.pixel_size()) {
-            std::memcpy(ray_counts.data(),
-                        ray_stats_readback_mapping[slot],
-                        ray_stats_readback_buf[slot].size());
-        } else {
-            uint8_t *buf = ray_stats_readback_mapping[slot];
-            for (uint32_t y = 0; y < ray_stats.dims().y; ++y) {
-                std::memcpy(ray_counts.data() + y * ray_stats.dims().x,
-                            buf + y * ray_stats.linear_row_pitch(),
-                            ray_stats.dims().x * ray_stats.pixel_size());
-            }
-        }
-
-        const uint64_t total_rays =
-            std::accumulate(ray_counts.begin(),
-                            ray_counts.end(),
-                            uint64_t(0),
-                            [](const uint64_t &total, const uint16_t &c) { return total + c; });
-        stats.rays_per_second = total_rays / (stats.render_time * 1.0e-3);
-    }
-#endif
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     {
@@ -1505,4 +1528,31 @@ void RenderDXR::sync_gpu()
     } else {
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction: sync_gpu wait skipped because fence already completed");
     }
+}
+
+void RenderDXR::wait_for_fence_value(uint64_t value)
+{
+    if (fence->GetCompletedValue() >= value) {
+        DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction: wait_for_fence_value skipped (already completed)");
+        return;
+    }
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    {
+        std::ostringstream msg;
+        msg << "ID3D12Fence interaction begin: wait_for_fence_value SetEventOnCompletion value="
+            << value;
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+#endif
+    CHECK_ERR(fence->SetEventOnCompletion(value, fence_evt));
+    WaitForSingleObject(fence_evt, INFINITE);
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    {
+        std::ostringstream msg;
+        msg << "ID3D12Fence interaction end: wait_for_fence_value returned; completed_value="
+            << fence->GetCompletedValue();
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+#endif
 }

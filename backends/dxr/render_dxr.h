@@ -65,6 +65,9 @@ struct RenderDXR : RenderBackend {
     // Whether a given slot has been submitted at least once (so its readback
     // buffers and timestamp queries are valid to read back).
     bool slot_submitted[MAX_FRAMES_IN_FLIGHT] = {};
+    // Fence value signaled once a slot's frame work has fully completed on the GPU.
+    // Used to reclaim the slot and to gate reading back its timing/ray statistics.
+    uint64_t slot_fence_value[MAX_FRAMES_IN_FLIGHT] = {};
     bool native_display = false;
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
@@ -100,6 +103,8 @@ struct RenderDXR : RenderBackend {
 
 #ifdef REPORT_RAY_STATS
     std::vector<uint16_t> ray_counts;
+    // Total rays for each in-flight slot, read back lagged by one frame.
+    uint64_t slot_total_rays[MAX_FRAMES_IN_FLIGHT] = {};
 #endif
 
     RenderDXR(Microsoft::WRL::ComPtr<ID3D12Device5> device);
@@ -156,4 +161,9 @@ private:
 #endif
 
     void sync_gpu();
+
+    // Block the host until the GPU has signaled the fence with at least the given
+    // value, without otherwise advancing the fence. Used to reclaim an in-flight
+    // frame slot and to gate reading back its statistics.
+    void wait_for_fence_value(uint64_t value);
 };
