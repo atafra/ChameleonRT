@@ -10,6 +10,8 @@
 #include "dxr_utils.h"
 #include "render_backend.h"
 
+//#define ENABLE_DXR_FRAME_DIAGNOSTICS
+
 struct RenderDXR : RenderBackend {
     enum class OIDNInteropMode {
         HostBlocking,
@@ -49,6 +51,10 @@ struct RenderDXR : RenderBackend {
     uint32_t frame_id = 0;
     bool native_display = false;
 
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    bool frame_diagnostics_active = false;
+#endif
+
     // Query pool to measure just dispatch rays perf
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> timing_query_heap;
     dxr::Buffer query_resolve_buffer;
@@ -60,7 +66,7 @@ struct RenderDXR : RenderBackend {
     oidn::SemaphoreRef oidn_semaphore;
     OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
     bool oidn_interop_mode_initialized = false;
-    bool oidn_device_async_supported = false;
+    bool oidn_device_async_supported = true;
 #endif
 
 #ifdef REPORT_RAY_STATS
@@ -109,6 +115,11 @@ private:
     void build_descriptor_heap();
 
     void record_command_lists();
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    bool frame_diagnostics_enabled() const;
+    void log_frame_diagnostic(const std::string &event) const;
+#endif
 
     void sync_gpu();
 };

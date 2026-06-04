@@ -7,6 +7,7 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#include "render_dxr.h"
 #include "render_dxr_embedded_dxil.h"
 #include "tonemap_embedded_dxil.h"
 #include "util.h"
@@ -19,6 +20,26 @@
 #define NUM_RAY_TYPES 2
 
 using Microsoft::WRL::ComPtr;
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+bool RenderDXR::frame_diagnostics_enabled() const
+{
+    return frame_diagnostics_active && frame_id < 5;
+}
+
+void RenderDXR::log_frame_diagnostic(const std::string &event) const
+{
+    if (!frame_diagnostics_enabled()) {
+        return;
+    }
+
+    std::cout << "[DXR frame diagnostic][frame " << frame_id << "] "
+              << event << std::endl;
+}
+#define DXR_FRAME_DIAGNOSTIC(event) log_frame_diagnostic(event)
+#else
+#define DXR_FRAME_DIAGNOSTIC(event) do { } while (false)
+#endif
 
 RenderDXR::RenderDXR(Microsoft::WRL::ComPtr<ID3D12Device5> device)
     : device(device), native_display(true)
@@ -594,16 +615,39 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         frame_id = 0;
     }
 
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    frame_diagnostics_active = frame_id < 5;
+    {
+        std::ostringstream msg;
+        msg << "frame start; camera_changed=" << camera_changed
+            << ", readback_framebuffer=" << readback_framebuffer
+            << ", native_display=" << native_display
+            << ", fence_value=" << fence_value;
+#ifdef ENABLE_OIDN
+        msg << ", oidn_interop_mode=" << oidn_interop_mode_name(oidn_interop_mode)
+            << ", oidn_device_async_supported=" << oidn_device_async_supported;
+#endif
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+#endif
+
+    DXR_FRAME_DIAGNOSTIC("view parameter update begin");
     update_view_parameters(pos, dir, up, fovy);
+    DXR_FRAME_DIAGNOSTIC("view parameter update end");
 
     ID3D12CommandList *render_cmds = render_cmd_list.Get();
+    DXR_FRAME_DIAGNOSTIC("ray tracing begin: ExecuteCommandLists(render_cmd_list)");
     cmd_queue->ExecuteCommandLists(1, &render_cmds);
+    DXR_FRAME_DIAGNOSTIC("ray tracing command list submitted");
 
 #ifdef ENABLE_OIDN
     // Denoise the frame
     if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
+        DXR_FRAME_DIAGNOSTIC("denoising begin: host_blocking sync before OIDN execute");
         sync_gpu();
+        DXR_FRAME_DIAGNOSTIC("denoising host_blocking sync complete; oidn_filter.execute begin");
         oidn_filter.execute();
+        DXR_FRAME_DIAGNOSTIC("denoising end: oidn_filter.execute returned");
     } else if (oidn_interop_mode == OIDNInteropMode::DeviceAsync) {
         if (!oidn_device_async_supported) {
             throw(std::logic_error("Device async OIDN interop is not initialized"));
@@ -612,13 +656,54 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         // signal fence and let OIDN wait to execute asynchronously
         const uint64_t oidn_fence_value = fence_value;
         fence_value += 2;
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        {
+            std::ostringstream msg;
+            msg << "ID3D12Fence interaction begin: command queue Signal for OIDN, value="
+                << oidn_fence_value << ", reserved_next_value=" << fence_value;
+            DXR_FRAME_DIAGNOSTIC(msg.str());
+        }
+#endif
         cmd_queue->Signal(fence.Get(), oidn_fence_value);
+        DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: command queue Signal for OIDN returned");
 
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        {
+            std::ostringstream msg;
+            msg << "denoising begin: oidn_device.waitSemaphoreAsync waiting for fence value "
+                << oidn_fence_value;
+            DXR_FRAME_DIAGNOSTIC(msg.str());
+        }
+#endif
         oidn_device.waitSemaphoreAsync(oidn_semaphore, oidn_fence_value);
-        oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_semaphore, oidn_fence_value + 1);
+        DXR_FRAME_DIAGNOSTIC("denoising: oidn_device.waitSemaphoreAsync returned");
 
+        DXR_FRAME_DIAGNOSTIC("denoising: oidn_filter.executeAsync begin");
+        oidn_filter.executeAsync();
+        DXR_FRAME_DIAGNOSTIC("denoising: oidn_filter.executeAsync returned");
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        {
+            std::ostringstream msg;
+            msg << "ID3D12Fence interaction begin: oidn_device.signalSemaphoreAsync value="
+                << oidn_fence_value + 1;
+            DXR_FRAME_DIAGNOSTIC(msg.str());
+        }
+#endif
+        oidn_device.signalSemaphoreAsync(oidn_semaphore, oidn_fence_value + 1);
+        DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: oidn_device.signalSemaphoreAsync returned");
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        {
+            std::ostringstream msg;
+            msg << "ID3D12Fence interaction begin: command queue Wait for OIDN fence value "
+                << oidn_fence_value + 1;
+            DXR_FRAME_DIAGNOSTIC(msg.str());
+        }
+#endif
         cmd_queue->Wait(fence.Get(), oidn_fence_value + 1);
+        DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: command queue Wait for OIDN returned; denoising end");
 
     } else {
         throw(std::logic_error("Invalid OIDN sync method"));
@@ -629,7 +714,9 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     // Tonemap the frame
     {
         ID3D12CommandList *tonemap_cmds = tonemap_cmd_list.Get();
+        DXR_FRAME_DIAGNOSTIC("tonemap begin: ExecuteCommandLists(tonemap_cmd_list)");
         cmd_queue->ExecuteCommandLists(1, &tonemap_cmds);
+        DXR_FRAME_DIAGNOSTIC("tonemap command list submitted");
     }
 
 #ifdef REPORT_RAY_STATS
@@ -640,14 +727,19 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
     if (need_readback) {
         ID3D12CommandList *readback_cmds = readback_cmd_list.Get();
+        DXR_FRAME_DIAGNOSTIC("readback begin: ExecuteCommandLists(readback_cmd_list)");
         cmd_queue->ExecuteCommandLists(1, &readback_cmds);
+        DXR_FRAME_DIAGNOSTIC("readback command list submitted");
     }
 
     // Wait for the image readback commands to complete as well
+    DXR_FRAME_DIAGNOSTIC("final frame GPU sync begin");
     sync_gpu();
+    DXR_FRAME_DIAGNOSTIC("final frame GPU sync end");
 
     // Read back the timestamps for DispatchRays to compute the true time spent rendering
     {
+        DXR_FRAME_DIAGNOSTIC("timestamp readback begin");
         D3D12_RANGE read_range;
         read_range.Begin = 0;
         read_range.End = query_resolve_buffer.size();
@@ -661,9 +753,11 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         stats.render_time = elapsed_time;
 
         query_resolve_buffer.unmap();
+        DXR_FRAME_DIAGNOSTIC("timestamp readback end");
     }
 
     if (need_readback) {
+        DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback begin");
         // Map the readback buf and copy out the rendered image
         // We may have needed some padding for the readback buffer, so we might have to read
         // row by row.
@@ -682,6 +776,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
             }
         }
         img_readback_buf.unmap();
+        DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback end");
     }
 
 #ifdef REPORT_RAY_STATS
@@ -704,6 +799,17 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
                         uint64_t(0),
                         [](const uint64_t &total, const uint16_t &c) { return total + c; });
     stats.rays_per_second = total_rays / (stats.render_time * 1.0e-3);
+#endif
+
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    {
+        std::ostringstream msg;
+        msg << "frame end; render_time_ms=" << stats.render_time
+            << ", next_frame_id=" << frame_id + 1
+            << ", fence_value=" << fence_value;
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+    frame_diagnostics_active = false;
 #endif
 
     ++frame_id;
@@ -1189,10 +1295,58 @@ void RenderDXR::record_command_lists()
 void RenderDXR::sync_gpu()
 {
     const uint64_t signal_val = fence_value++;
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    {
+        std::ostringstream msg;
+        msg << "ID3D12Fence interaction begin: sync_gpu Signal value=" << signal_val
+            << ", next_fence_value=" << fence_value;
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+#endif
     CHECK_ERR(cmd_queue->Signal(fence.Get(), signal_val));
 
-    if (fence->GetCompletedValue() < signal_val) {
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    {
+        std::ostringstream msg;
+        msg << "ID3D12Fence interaction end: sync_gpu Signal returned; completed_value="
+            << fence->GetCompletedValue();
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+#endif
+
+    const uint64_t completed_value = fence->GetCompletedValue();
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    {
+        std::ostringstream msg;
+        msg << "ID3D12Fence interaction: sync_gpu GetCompletedValue returned "
+            << completed_value << " for target " << signal_val;
+        DXR_FRAME_DIAGNOSTIC(msg.str());
+    }
+#endif
+
+    if (completed_value < signal_val) {
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        {
+            std::ostringstream msg;
+            msg << "ID3D12Fence interaction begin: SetEventOnCompletion value="
+                << signal_val;
+            DXR_FRAME_DIAGNOSTIC(msg.str());
+        }
+#endif
         CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: SetEventOnCompletion returned; WaitForSingleObject begin");
+#endif
         WaitForSingleObject(fence_evt, INFINITE);
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        {
+            std::ostringstream msg;
+            msg << "ID3D12Fence interaction end: WaitForSingleObject returned; completed_value="
+                << fence->GetCompletedValue();
+            DXR_FRAME_DIAGNOSTIC(msg.str());
+        }
+#endif
+    } else {
+        DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction: sync_gpu wait skipped because fence already completed");
     }
 }
