@@ -17,17 +17,28 @@ struct RenderDXR : RenderBackend {
         HostBlocking,
         DeviceAsync };
 
+    // Number of frames whose GPU work / timing queries may be in flight at once.
+    // Double-buffering the per-frame command lists, timing queries and readback
+    // buffers lets a future change read back statistics from a previous frame
+    // without blocking the host on the work just submitted.
+    static const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
     Microsoft::WRL::ComPtr<ID3D12Device5> device;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> cmd_queue;
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> cmd_allocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> cmd_list;
 
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> render_cmd_allocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> render_cmd_list, tonemap_cmd_list, readback_cmd_list;
+    // Per in-flight frame slot command allocators and lists.
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> render_cmd_allocator[MAX_FRAMES_IN_FLIGHT];
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> render_cmd_list[MAX_FRAMES_IN_FLIGHT],
+        tonemap_cmd_list[MAX_FRAMES_IN_FLIGHT], readback_cmd_list[MAX_FRAMES_IN_FLIGHT];
 
-    dxr::Buffer view_param_buf, img_readback_buf, instance_buf, material_param_buf, light_buf,
-        ray_stats_readback_buf;
+    dxr::Buffer view_param_buf, instance_buf, material_param_buf, light_buf;
+
+    // Per-slot framebuffer / ray-stats readback buffers.
+    dxr::Buffer img_readback_buf[MAX_FRAMES_IN_FLIGHT];
+    dxr::Buffer ray_stats_readback_buf[MAX_FRAMES_IN_FLIGHT];
 
     dxr::Texture2D render_target, ray_stats;
     dxr::Buffer accum_buffer;
@@ -49,15 +60,21 @@ struct RenderDXR : RenderBackend {
     HANDLE fence_evt;
 
     uint32_t frame_id = 0;
+    // Index of the in-flight frame slot used for the next render() call.
+    uint32_t frame_slot = 0;
+    // Whether a given slot has been submitted at least once (so its readback
+    // buffers and timestamp queries are valid to read back).
+    bool slot_submitted[MAX_FRAMES_IN_FLIGHT] = {};
     bool native_display = false;
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     bool frame_diagnostics_active = false;
 #endif
 
-    // Query pool to measure GPU frame stage timings
+    // Query pool to measure GPU frame stage timings. The heap holds one set of
+    // queries per in-flight frame slot.
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> timing_query_heap;
-    dxr::Buffer query_resolve_buffer;
+    dxr::Buffer query_resolve_buffer[MAX_FRAMES_IN_FLIGHT];
 
     // The timestamp frequency is a fixed property of the command queue, so it is
     // queried once and cached instead of per-frame.
@@ -65,10 +82,10 @@ struct RenderDXR : RenderBackend {
 
     // Readback buffers are kept persistently mapped for the lifetime of the
     // resource to avoid the per-frame Map/Unmap overhead.
-    const uint64_t *query_resolve_mapping = nullptr;
-    uint8_t *img_readback_mapping = nullptr;
+    const uint64_t *query_resolve_mapping[MAX_FRAMES_IN_FLIGHT] = {};
+    uint8_t *img_readback_mapping[MAX_FRAMES_IN_FLIGHT] = {};
 #ifdef REPORT_RAY_STATS
-    uint8_t *ray_stats_readback_mapping = nullptr;
+    uint8_t *ray_stats_readback_mapping[MAX_FRAMES_IN_FLIGHT] = {};
 #endif
 
 #ifdef ENABLE_OIDN
@@ -129,6 +146,9 @@ private:
     void build_descriptor_heap();
 
     void record_command_lists();
+
+    // Record the command lists for a single in-flight frame slot.
+    void record_command_lists_for_slot(uint32_t slot);
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     bool frame_diagnostics_enabled() const;

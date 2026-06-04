@@ -204,6 +204,10 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
 #endif
 
     frame_id = 0;
+    frame_slot = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        slot_submitted[i] = false;
+    }
     img.resize(fb_width * fb_height);
 
     render_target = dxr::Texture2D::device(device.Get(),
@@ -231,18 +235,18 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 #endif
 
-    // Allocate the readback buffer so we can read the image back to the CPU
-    img_readback_buf = dxr::Buffer::readback(device.Get(),
-                                             render_target.linear_row_pitch() * fb_height,
-                                             D3D12_RESOURCE_STATE_COPY_DEST);
+    // Allocate the per-slot readback buffers so we can read the image back to the
+    // CPU. They are kept persistently mapped to avoid per-frame Map/Unmap overhead.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        img_readback_buf[i] =
+            dxr::Buffer::readback(device.Get(),
+                                  render_target.linear_row_pitch() * fb_height,
+                                  D3D12_RESOURCE_STATE_COPY_DEST);
 
-    // Keep the framebuffer readback buffer persistently mapped to avoid
-    // per-frame Map/Unmap overhead.
-    {
         D3D12_RANGE read_range;
         read_range.Begin = 0;
-        read_range.End = img_readback_buf.size();
-        img_readback_mapping = static_cast<uint8_t *>(img_readback_buf.map(read_range));
+        read_range.End = img_readback_buf[i].size();
+        img_readback_mapping[i] = static_cast<uint8_t *>(img_readback_buf[i].map(read_range));
     }
 
 #ifdef REPORT_RAY_STATS
@@ -252,18 +256,20 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                        DXGI_FORMAT_R16_UINT,
                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-    ray_stats_readback_buf = dxr::Buffer::readback(device.Get(),
-                                                   ray_stats.linear_row_pitch() * fb_height,
-                                                   D3D12_RESOURCE_STATE_COPY_DEST);
     ray_counts.resize(ray_stats.dims().x * ray_stats.dims().y, 0);
 
-    // Keep the ray stats readback buffer persistently mapped as well.
-    {
+    // Per-slot ray stats readback buffers, kept persistently mapped as well.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        ray_stats_readback_buf[i] =
+            dxr::Buffer::readback(device.Get(),
+                                  ray_stats.linear_row_pitch() * fb_height,
+                                  D3D12_RESOURCE_STATE_COPY_DEST);
+
         D3D12_RANGE read_range;
         read_range.Begin = 0;
-        read_range.End = ray_stats_readback_buf.size();
-        ray_stats_readback_mapping =
-            static_cast<uint8_t *>(ray_stats_readback_buf.map(read_range));
+        read_range.End = ray_stats_readback_buf[i].size();
+        ray_stats_readback_mapping[i] =
+            static_cast<uint8_t *>(ray_stats_readback_buf[i].map(read_range));
     }
 #endif
 
@@ -665,6 +671,10 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         frame_id = 0;
     }
 
+    // The in-flight frame slot whose command lists / readback buffers / timing
+    // queries we use this frame.
+    const uint32_t slot = frame_slot;
+
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     frame_diagnostics_active = frame_id < 5;
     {
@@ -685,7 +695,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     update_view_parameters(pos, dir, up, fovy);
     DXR_FRAME_DIAGNOSTIC("view parameter update end");
 
-    ID3D12CommandList *render_cmds = render_cmd_list.Get();
+    ID3D12CommandList *render_cmds = render_cmd_list[slot].Get();
     DXR_FRAME_DIAGNOSTIC("ray tracing begin: ExecuteCommandLists(render_cmd_list)");
     cmd_queue->ExecuteCommandLists(1, &render_cmds);
     DXR_FRAME_DIAGNOSTIC("ray tracing command list submitted");
@@ -763,7 +773,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
     // Tonemap the frame
     {
-        ID3D12CommandList *tonemap_cmds = tonemap_cmd_list.Get();
+        ID3D12CommandList *tonemap_cmds = tonemap_cmd_list[slot].Get();
         DXR_FRAME_DIAGNOSTIC("tonemap begin: ExecuteCommandLists(tonemap_cmd_list)");
         cmd_queue->ExecuteCommandLists(1, &tonemap_cmds);
         DXR_FRAME_DIAGNOSTIC("tonemap command list submitted");
@@ -779,7 +789,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 #endif
 
     if (need_readback) {
-        ID3D12CommandList *readback_cmds = readback_cmd_list.Get();
+        ID3D12CommandList *readback_cmds = readback_cmd_list[slot].Get();
         DXR_FRAME_DIAGNOSTIC("readback begin: ExecuteCommandLists(readback_cmd_list)");
         cmd_queue->ExecuteCommandLists(1, &readback_cmds);
         DXR_FRAME_DIAGNOSTIC("readback command list submitted");
@@ -790,10 +800,12 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     sync_gpu();
     DXR_FRAME_DIAGNOSTIC("final frame GPU sync end");
 
+    slot_submitted[slot] = true;
+
     // Read back the timestamps for DispatchRays to compute the true time spent rendering
     {
         DXR_FRAME_DIAGNOSTIC("timestamp readback begin");
-        const uint64_t *timestamps = query_resolve_mapping;
+        const uint64_t *timestamps = query_resolve_mapping[slot];
 
         stats.frame_time = elapsed_timestamp_ms(timestamps,
                                                 timestamp_freq,
@@ -857,9 +869,9 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         // row by row.
         if (render_target.linear_row_pitch() ==
             render_target.dims().x * render_target.pixel_size()) {
-            std::memcpy(img.data(), img_readback_mapping, img_readback_buf.size());
+            std::memcpy(img.data(), img_readback_mapping[slot], img_readback_buf[slot].size());
         } else {
-            uint8_t *buf = img_readback_mapping;
+            uint8_t *buf = img_readback_mapping[slot];
             for (uint32_t y = 0; y < render_target.dims().y; ++y) {
                 std::memcpy(img.data() + y * render_target.dims().x,
                             buf + y * render_target.linear_row_pitch(),
@@ -872,10 +884,11 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 #ifdef REPORT_RAY_STATS
     if (collect_ray_stats) {
         if (ray_stats.linear_row_pitch() == ray_stats.dims().x * ray_stats.pixel_size()) {
-            std::memcpy(
-                ray_counts.data(), ray_stats_readback_mapping, ray_stats_readback_buf.size());
+            std::memcpy(ray_counts.data(),
+                        ray_stats_readback_mapping[slot],
+                        ray_stats_readback_buf[slot].size());
         } else {
-            uint8_t *buf = ray_stats_readback_mapping;
+            uint8_t *buf = ray_stats_readback_mapping[slot];
             for (uint32_t y = 0; y < ray_stats.dims().y; ++y) {
                 std::memcpy(ray_counts.data() + y * ray_stats.dims().x,
                             buf + y * ray_stats.linear_row_pitch(),
@@ -907,6 +920,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 #endif
 
     ++frame_id;
+    frame_slot = (frame_slot + 1) % MAX_FRAMES_IN_FLIGHT;
     return stats;
 }
 
@@ -923,8 +937,10 @@ void RenderDXR::create_device_objects()
     CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                              IID_PPV_ARGS(&cmd_allocator)));
 
-    CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                             IID_PPV_ARGS(&render_cmd_allocator)));
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 IID_PPV_ARGS(&render_cmd_allocator[i])));
+    }
 
     // Make the command lists
     CHECK_ERR(device->CreateCommandList(0,
@@ -934,26 +950,28 @@ void RenderDXR::create_device_objects()
                                         IID_PPV_ARGS(&cmd_list)));
     CHECK_ERR(cmd_list->Close());
 
-    CHECK_ERR(device->CreateCommandList(0,
-                                        D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                        cmd_allocator.Get(),
-                                        nullptr,
-                                        IID_PPV_ARGS(&render_cmd_list)));
-    CHECK_ERR(render_cmd_list->Close());
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        CHECK_ERR(device->CreateCommandList(0,
+                                            D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                            render_cmd_allocator[i].Get(),
+                                            nullptr,
+                                            IID_PPV_ARGS(&render_cmd_list[i])));
+        CHECK_ERR(render_cmd_list[i]->Close());
 
-    CHECK_ERR(device->CreateCommandList(0,
-                                        D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                        cmd_allocator.Get(),
-                                        nullptr,
-                                        IID_PPV_ARGS(&tonemap_cmd_list)));
-    CHECK_ERR(tonemap_cmd_list->Close());
+        CHECK_ERR(device->CreateCommandList(0,
+                                            D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                            render_cmd_allocator[i].Get(),
+                                            nullptr,
+                                            IID_PPV_ARGS(&tonemap_cmd_list[i])));
+        CHECK_ERR(tonemap_cmd_list[i]->Close());
 
-    CHECK_ERR(device->CreateCommandList(0,
-                                        D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                        cmd_allocator.Get(),
-                                        nullptr,
-                                        IID_PPV_ARGS(&readback_cmd_list)));
-    CHECK_ERR(readback_cmd_list->Close());
+        CHECK_ERR(device->CreateCommandList(0,
+                                            D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                            render_cmd_allocator[i].Get(),
+                                            nullptr,
+                                            IID_PPV_ARGS(&readback_cmd_list[i])));
+        CHECK_ERR(readback_cmd_list[i]->Close());
+    }
 
     // Allocate a constants buffer for the view parameters.
     // These are write once, read once (assumed to change each frame).
@@ -968,29 +986,30 @@ void RenderDXR::create_device_objects()
         align_to(5 * sizeof(glm::vec4), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT),
         D3D12_RESOURCE_STATE_GENERIC_READ);
 
-    // Our query heap stores timestamps for the frame and its major GPU passes.
+    // Our query heap stores timestamps for the frame and its major GPU passes,
+    // with one set of queries per in-flight frame slot.
     D3D12_QUERY_HEAP_DESC timing_query_heap_desc = {};
-    timing_query_heap_desc.Count = TIMING_QUERY_COUNT;
+    timing_query_heap_desc.Count = TIMING_QUERY_COUNT * MAX_FRAMES_IN_FLIGHT;
     timing_query_heap_desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
     device->CreateQueryHeap(&timing_query_heap_desc, IID_PPV_ARGS(&timing_query_heap));
-
-    // Buffer to readback query results in to
-    query_resolve_buffer = dxr::Buffer::readback(
-        device.Get(), sizeof(uint64_t) * TIMING_QUERY_COUNT, D3D12_RESOURCE_STATE_COPY_DEST);
 
     // The timestamp frequency is fixed for the lifetime of the queue, so cache it
     // once here instead of querying it every frame.
     CHECK_ERR(cmd_queue->GetTimestampFrequency(&timestamp_freq));
 
-    // Keep the query resolve buffer persistently mapped to avoid per-frame
-    // Map/Unmap overhead. The CPU only reads from it, so map with an empty
-    // written-range on the implicit unmap at resource destruction.
-    {
+    // Per-slot buffer to readback query results in to, kept persistently mapped to
+    // avoid per-frame Map/Unmap overhead. The CPU only reads from it.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        query_resolve_buffer[i] =
+            dxr::Buffer::readback(device.Get(),
+                                  sizeof(uint64_t) * TIMING_QUERY_COUNT,
+                                  D3D12_RESOURCE_STATE_COPY_DEST);
+
         D3D12_RANGE read_range;
         read_range.Begin = 0;
-        read_range.End = query_resolve_buffer.size();
-        query_resolve_mapping =
-            static_cast<const uint64_t *>(query_resolve_buffer.map(read_range));
+        read_range.End = query_resolve_buffer[i].size();
+        query_resolve_mapping[i] =
+            static_cast<const uint64_t *>(query_resolve_buffer[i].map(read_range));
     }
 }
 
@@ -1328,89 +1347,105 @@ void RenderDXR::build_descriptor_heap()
 
 void RenderDXR::record_command_lists()
 {
-    CHECK_ERR(render_cmd_allocator->Reset());
-    CHECK_ERR(render_cmd_list->Reset(render_cmd_allocator.Get(), nullptr));
+    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
+        record_command_lists_for_slot(slot);
+    }
+}
+
+void RenderDXR::record_command_lists_for_slot(uint32_t slot)
+{
+    // Base index of this slot's set of timestamp queries within the shared heap.
+    const uint32_t query_base = slot * TIMING_QUERY_COUNT;
+
+    CHECK_ERR(render_cmd_allocator[slot]->Reset());
+    CHECK_ERR(render_cmd_list[slot]->Reset(render_cmd_allocator[slot].Get(), nullptr));
 
    // TODO: We'll need a second desc. heap for the sampler and bind both of them here
     std::array<ID3D12DescriptorHeap *, 2> desc_heaps = {raygen_desc_heap.get(),
                                                         raygen_sampler_heap.get()};
-    render_cmd_list->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
-    render_cmd_list->SetPipelineState1(rt_pipeline.get());
-    render_cmd_list->SetComputeRootSignature(rt_pipeline.global_sig());
+    render_cmd_list[slot]->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
+    render_cmd_list[slot]->SetPipelineState1(rt_pipeline.get());
+    render_cmd_list[slot]->SetComputeRootSignature(rt_pipeline.global_sig());
 
-    render_cmd_list->EndQuery(
-        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_FRAME_BEGIN);
-    render_cmd_list->EndQuery(
-        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_RAYTRACING_BEGIN);
+    render_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
+                                    D3D12_QUERY_TYPE_TIMESTAMP,
+                                    query_base + TIMING_QUERY_FRAME_BEGIN);
+    render_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
+                                    D3D12_QUERY_TYPE_TIMESTAMP,
+                                    query_base + TIMING_QUERY_RAYTRACING_BEGIN);
 
     D3D12_DISPATCH_RAYS_DESC dispatch_rays = rt_pipeline.dispatch_rays(render_target.dims());
-    render_cmd_list->DispatchRays(&dispatch_rays);
+    render_cmd_list[slot]->DispatchRays(&dispatch_rays);
 
-    render_cmd_list->EndQuery(
-        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_RAYTRACING_END);
-                                      
+    render_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
+                                    D3D12_QUERY_TYPE_TIMESTAMP,
+                                    query_base + TIMING_QUERY_RAYTRACING_END);
+
     D3D12_RESOURCE_BARRIER barrier = barrier_uav(accum_buffer);
-    render_cmd_list->ResourceBarrier(1, &barrier);
+    render_cmd_list[slot]->ResourceBarrier(1, &barrier);
 
-    render_cmd_list->EndQuery(
-        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_DENOISE_BEGIN);
+    render_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
+                                    D3D12_QUERY_TYPE_TIMESTAMP,
+                                    query_base + TIMING_QUERY_DENOISE_BEGIN);
 
-    CHECK_ERR(render_cmd_list->Close());
+    CHECK_ERR(render_cmd_list[slot]->Close());
 
     // Tonemap
-    CHECK_ERR(tonemap_cmd_list->Reset(render_cmd_allocator.Get(), nullptr));
-    tonemap_cmd_list->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
-    tonemap_cmd_list->SetPipelineState(tonemap_ps.Get());
-    tonemap_cmd_list->SetComputeRootSignature(tonemap_root_sig.get());
-    tonemap_cmd_list->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
+    CHECK_ERR(tonemap_cmd_list[slot]->Reset(render_cmd_allocator[slot].Get(), nullptr));
+    tonemap_cmd_list[slot]->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
+    tonemap_cmd_list[slot]->SetPipelineState(tonemap_ps.Get());
+    tonemap_cmd_list[slot]->SetComputeRootSignature(tonemap_root_sig.get());
+    tonemap_cmd_list[slot]->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
 
-    tonemap_cmd_list->EndQuery(
-        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_TONEMAP_BEGIN);
+    tonemap_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
+                                     D3D12_QUERY_TYPE_TIMESTAMP,
+                                     query_base + TIMING_QUERY_TONEMAP_BEGIN);
 
     glm::uvec2 dispatch_dim = render_target.dims();
     glm::uvec2 workgroup_dim(16, 16);
     dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
-    tonemap_cmd_list->Dispatch(dispatch_dim.x, dispatch_dim.y, 1);
+    tonemap_cmd_list[slot]->Dispatch(dispatch_dim.x, dispatch_dim.y, 1);
 
-    tonemap_cmd_list->EndQuery(
-        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_FRAME_END);
+    tonemap_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
+                                     D3D12_QUERY_TYPE_TIMESTAMP,
+                                     query_base + TIMING_QUERY_FRAME_END);
 
-    tonemap_cmd_list->ResolveQueryData(timing_query_heap.Get(),
-                                       D3D12_QUERY_TYPE_TIMESTAMP,
-                                       0,
-                                       TIMING_QUERY_COUNT,
-                                       query_resolve_buffer.get(),
-                                       0);
+    tonemap_cmd_list[slot]->ResolveQueryData(timing_query_heap.Get(),
+                                             D3D12_QUERY_TYPE_TIMESTAMP,
+                                             query_base,
+                                             TIMING_QUERY_COUNT,
+                                             query_resolve_buffer[slot].get(),
+                                             0);
 
-    CHECK_ERR(tonemap_cmd_list->Close());
+    CHECK_ERR(tonemap_cmd_list[slot]->Close());
 
     // Now copy the rendered image into our readback heap so we can give it back
     // to our simple window to blit the image (TODO: Maybe in the future keep this on the GPU?
     // would we be able to share with GL or need a separate DX window backend?)
-    CHECK_ERR(readback_cmd_list->Reset(render_cmd_allocator.Get(), nullptr));
+    CHECK_ERR(readback_cmd_list[slot]->Reset(render_cmd_allocator[slot].Get(), nullptr));
     {
         // Render target from UA -> Copy Source
         auto b = barrier_transition(render_target, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        readback_cmd_list->ResourceBarrier(1, &b);
+        readback_cmd_list[slot]->ResourceBarrier(1, &b);
 #ifdef REPORT_RAY_STATS
         b = barrier_transition(ray_stats, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        readback_cmd_list->ResourceBarrier(1, &b);
+        readback_cmd_list[slot]->ResourceBarrier(1, &b);
 #endif
 
-        render_target.readback(readback_cmd_list.Get(), img_readback_buf);
+        render_target.readback(readback_cmd_list[slot].Get(), img_readback_buf[slot]);
 #ifdef REPORT_RAY_STATS
-        ray_stats.readback(readback_cmd_list.Get(), ray_stats_readback_buf);
+        ray_stats.readback(readback_cmd_list[slot].Get(), ray_stats_readback_buf[slot]);
 #endif
 
         // Transition the render target back to UA so we can write to it in the next frame
         b = barrier_transition(render_target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        readback_cmd_list->ResourceBarrier(1, &b);
+        readback_cmd_list[slot]->ResourceBarrier(1, &b);
 #ifdef REPORT_RAY_STATS
         b = barrier_transition(ray_stats, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        readback_cmd_list->ResourceBarrier(1, &b);
+        readback_cmd_list[slot]->ResourceBarrier(1, &b);
 #endif
     }
-    CHECK_ERR(readback_cmd_list->Close());
+    CHECK_ERR(readback_cmd_list[slot]->Close());
 }
 
 void RenderDXR::sync_gpu()
