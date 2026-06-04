@@ -28,6 +28,11 @@ struct RenderVulkan : RenderBackend {
         TimelineSemaphore,
         BinarySemaphore };
 
+    // Number of frames whose GPU work / timing queries may be in flight at once.
+    // Double-buffering the per-frame resources lets us read back statistics from
+    // a previous frame without blocking the host on the work just submitted.
+    static const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
     std::shared_ptr<vkrt::Device> device;
 
     std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params;
@@ -61,9 +66,9 @@ struct RenderVulkan : RenderBackend {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
     VkCommandPool render_cmd_pool = VK_NULL_HANDLE;
-    VkCommandBuffer render_cmd_buf = VK_NULL_HANDLE;
-    VkCommandBuffer tonemap_cmd_buf = VK_NULL_HANDLE;
-    VkCommandBuffer readback_cmd_buf = VK_NULL_HANDLE;
+    VkCommandBuffer render_cmd_buf[MAX_FRAMES_IN_FLIGHT] = {};
+    VkCommandBuffer tonemap_cmd_buf[MAX_FRAMES_IN_FLIGHT] = {};
+    VkCommandBuffer readback_cmd_buf[MAX_FRAMES_IN_FLIGHT] = {};
 
     vkrt::RTPipeline rt_pipeline;
     VkPipeline tonemap_pipeline = VK_NULL_HANDLE;
@@ -78,7 +83,21 @@ struct RenderVulkan : RenderBackend {
 
     vkrt::ShaderBindingTable shader_table;
 
-    VkFence fence = VK_NULL_HANDLE;
+    // One fence per in-flight frame slot. It is signaled by the final submission
+    // of that slot's frame and guards reuse of the slot's command buffers and
+    // timestamp queries.
+    VkFence fence[MAX_FRAMES_IN_FLIGHT] = {};
+    // Whether a given slot has been submitted at least once (so its query
+    // results are valid to read back).
+    bool slot_submitted[MAX_FRAMES_IN_FLIGHT] = {};
+#ifdef ENABLE_OIDN
+    // Host-measured denoise time per slot, used in the host-blocking interop mode
+    // where the denoiser cannot be timed with GPU timestamps.
+    float slot_denoise_time_ms[MAX_FRAMES_IN_FLIGHT] = {};
+#endif
+#ifdef REPORT_RAY_STATS
+    uint64_t slot_total_rays[MAX_FRAMES_IN_FLIGHT] = {};
+#endif
 
 #ifdef ENABLE_OIDN
     VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
@@ -98,6 +117,8 @@ struct RenderVulkan : RenderBackend {
     VkQueryPool timing_query_pool;
 
     size_t frame_id = 0;
+    // Index of the in-flight frame slot used for the next render() call.
+    uint32_t frame_slot = 0;
     bool native_display = false;
 
     RenderVulkan(std::shared_ptr<vkrt::Device> device);

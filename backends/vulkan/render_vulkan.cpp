@@ -53,19 +53,22 @@ RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
         info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         info.commandPool = render_cmd_pool;
         info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        info.commandBufferCount = 1;
+        info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
         CHECK_VULKAN(
-            vkAllocateCommandBuffers(device->logical_device(), &info, &render_cmd_buf));
+            vkAllocateCommandBuffers(device->logical_device(), &info, render_cmd_buf));
         CHECK_VULKAN(
-            vkAllocateCommandBuffers(device->logical_device(), &info, &tonemap_cmd_buf));
+            vkAllocateCommandBuffers(device->logical_device(), &info, tonemap_cmd_buf));
         CHECK_VULKAN(
-            vkAllocateCommandBuffers(device->logical_device(), &info, &readback_cmd_buf));
+            vkAllocateCommandBuffers(device->logical_device(), &info, readback_cmd_buf));
     }
 
     {
         VkFenceCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        CHECK_VULKAN(vkCreateFence(device->logical_device(), &info, nullptr, &fence));
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            CHECK_VULKAN(
+                vkCreateFence(device->logical_device(), &info, nullptr, &fence[i]));
+        }
     }
 
     view_param_buf = vkrt::Buffer::host(*device,
@@ -76,7 +79,7 @@ RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
     VkQueryPoolCreateInfo pool_ci = {};
     pool_ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     pool_ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    pool_ci.queryCount = TIMING_QUERY_COUNT;
+    pool_ci.queryCount = TIMING_QUERY_COUNT * MAX_FRAMES_IN_FLIGHT;
     CHECK_VULKAN(
         vkCreateQueryPool(device->logical_device(), &pool_ci, nullptr, &timing_query_pool));
 }
@@ -96,7 +99,9 @@ RenderVulkan::~RenderVulkan()
     vkDestroyDescriptorSetLayout(device->logical_device(), desc_layout, nullptr);
     vkDestroyDescriptorSetLayout(device->logical_device(), textures_desc_layout, nullptr);
     vkDestroyDescriptorPool(device->logical_device(), desc_pool, nullptr);
-    vkDestroyFence(device->logical_device(), fence, nullptr);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        vkDestroyFence(device->logical_device(), fence[i], nullptr);
+    }
     vkDestroyPipeline(device->logical_device(), tonemap_pipeline, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
 
@@ -261,6 +266,10 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 #endif
 
     frame_id = 0;
+    frame_slot = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        slot_submitted[i] = false;
+    }
     img.resize(fb_width * fb_height);
 
     render_target =
@@ -360,6 +369,10 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     // If we've loaded the scene and are rendering (i.e., the window was just resized while
     // running) update the descriptor sets and re-record the rendering commands
     if (desc_set != VK_NULL_HANDLE) {
+        // Make sure no in-flight frame is still using the command buffers / queries
+        // before we reset the pool and re-record them.
+        CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+
         vkrt::DescriptorSetUpdater()
             .write_storage_image(desc_set, 1, render_target)
             .write_ssbo(desc_set, 2, accum_buffer)
@@ -1075,12 +1088,33 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 
     update_view_parameters(pos, dir, up, fovy);
 
-    CHECK_VULKAN(vkResetFences(device->logical_device(), 1, &fence));
+    const uint32_t slot = frame_slot;
+    const uint32_t prev_slot =
+        (slot + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+
+    // Reclaim this slot's resources. This frame's work was submitted
+    // MAX_FRAMES_IN_FLIGHT render() calls ago, so this wait is almost always
+    // already satisfied and does not stall the host on the work we are about to
+    // submit.
+    if (slot_submitted[slot]) {
+        CHECK_VULKAN(vkWaitForFences(device->logical_device(),
+                                     1,
+                                     &fence[slot],
+                                     true,
+                                     std::numeric_limits<uint64_t>::max()));
+    }
+    CHECK_VULKAN(vkResetFences(device->logical_device(), 1, &fence[slot]));
+
+#ifdef REPORT_RAY_STATS
+    const bool need_readback = true;
+#else
+    const bool need_readback = !native_display || readback_framebuffer;
+#endif
 
     VkSubmitInfo submit_info = {};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &render_cmd_buf;
+    submit_info.pCommandBuffers = &render_cmd_buf[slot];
 
 #ifdef ENABLE_OIDN
     std::array<VkPipelineStageFlags, 1> waitStages = {{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}};
@@ -1112,18 +1146,30 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &render_ready_semaphore;
     }
-#endif
 
-    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence));
-
-#ifdef ENABLE_OIDN
     if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
-        CHECK_VULKAN(vkWaitForFences(
-            device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
-        // Denoise the frame
-        oidn_filter.execute();
+        // Submit the rendering work and block the host so the denoiser can run.
+        CHECK_VULKAN(
+            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence[slot]));
+        CHECK_VULKAN(vkWaitForFences(device->logical_device(),
+                                     1,
+                                     &fence[slot],
+                                     true,
+                                     std::numeric_limits<uint64_t>::max()));
+        CHECK_VULKAN(vkResetFences(device->logical_device(), 1, &fence[slot]));
 
+        // Denoise the frame, timed on the host: the GPU is idle here and the work
+        // runs on a separate OIDN device, so GPU timestamps cannot measure it.
+        const auto denoise_start = high_resolution_clock::now();
+        oidn_filter.execute();
+        const auto denoise_end = high_resolution_clock::now();
+        slot_denoise_time_ms[slot] =
+            duration_cast<duration<float, std::milli>>(denoise_end - denoise_start)
+                .count();
     } else if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
+        CHECK_VULKAN(
+            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+
         timeline_render_wait_value += 3;
         timeline_render_signal_value += 3;
 
@@ -1137,6 +1183,9 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         timelineInfo.pWaitSemaphoreValues = &timeline_tonemap_wait_value;
         timelineInfo.pSignalSemaphoreValues = &timeline_tonemap_signal_value;
     } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
+        CHECK_VULKAN(
+            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+
         oidn_device.waitSemaphoreAsync(oidn_wait_semaphore);
         oidn_filter.executeAsync();
         oidn_device.signalSemaphoreAsync(oidn_signal_semaphore);
@@ -1149,30 +1198,29 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         throw(std::logic_error("Invalid OIDN sync method"));
     }
 #else
-    // without OIDN we still need to synchronize with the host before reading back perf queries
-
-    // Wait for just the rendering commands to complete
-    // TO DO: avoid synchronization by double-buffering perf counters
-    CHECK_VULKAN(vkWaitForFences(
-        device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
+    // Without OIDN the render and tonemap work is chained on the GPU, so no host
+    // synchronization is required between the two submissions.
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
 #endif
 
+    // Queue the tonemap shader. When no framebuffer readback is needed this is the
+    // final submission for the slot, so it signals the slot's fence.
+    submit_info.pCommandBuffers = &tonemap_cmd_buf[slot];
+    {
+        const VkFence tonemap_fence = need_readback ? VK_NULL_HANDLE : fence[slot];
+        CHECK_VULKAN(
+            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, tonemap_fence));
+    }
 
-    // Queue the tonemap shader
-    submit_info.pCommandBuffers = &tonemap_cmd_buf;
-    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
-
-#ifdef ENABLE_OIDN
+    #ifdef ENABLE_OIDN
     if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
         timeline_tonemap_wait_value += 3;
         timeline_tonemap_signal_value += 3;
-
-        // we still need to synchronize with the host before reading back perf queries
-        CHECK_VULKAN(vkWaitForFences(
-            device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
     }
-#endif
+    #endif
 
+    // Subsequent submissions in this frame should not inherit the render/tonemap
+    // wait & signal semaphores.
     submit_info.waitSemaphoreCount = 0;
     submit_info.pWaitSemaphores = nullptr;
     submit_info.pWaitDstStageMask = nullptr;
@@ -1180,70 +1228,83 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pSignalSemaphores = nullptr;
     submit_info.pNext = nullptr;
 
-    // Read back the frame timestamps we recorded
-    std::array<uint64_t, TIMING_QUERY_COUNT> render_timestamps;
-    CHECK_VULKAN(vkGetQueryPoolResults(device->logical_device(),
-                                       timing_query_pool,
-                                       0,
-                                       TIMING_QUERY_COUNT,
-                                       render_timestamps.size() * sizeof(uint64_t),
-                                       render_timestamps.data(),
-                                       sizeof(uint64_t),
-                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
-    const double timestamp_freq = device->get_timestamp_frequency();
-    stats.frame_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                            timestamp_freq,
-                                            TIMING_QUERY_FRAME_BEGIN,
-                                            TIMING_QUERY_FRAME_END);
-    stats.render_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                             timestamp_freq,
-                                             TIMING_QUERY_RAYTRACING_BEGIN,
-                                             TIMING_QUERY_RAYTRACING_END);
-    stats.tonemap_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                              timestamp_freq,
-                                              TIMING_QUERY_TONEMAP_BEGIN,
-                                              TIMING_QUERY_FRAME_END);
-#ifdef ENABLE_OIDN
-    stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                              timestamp_freq,
-                                              TIMING_QUERY_DENOISE_BEGIN,
-                                              TIMING_QUERY_TONEMAP_BEGIN);
-#endif
-
-#ifdef REPORT_RAY_STATS
-    const bool need_readback = true;
-#else
-    const bool need_readback = !native_display || readback_framebuffer;
-#endif
-
     if (need_readback) {
-        // Wait for the device to finish all rendering
-        CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+        // Chain the readback copy after the tonemap on the GPU; it is the final
+        // submission for this slot and signals the slot's fence.
+        submit_info.pCommandBuffers = &readback_cmd_buf[slot];
+        CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence[slot]));
 
-        // Queue the readback copy
-        submit_info.pCommandBuffers = &readback_cmd_buf;
-        CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
-
-        // Now wait for the device to finish the readback copy as well
-        CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+        // The displayed framebuffer must be current, so wait on this slot's fence
+        // (rather than draining the whole queue) before copying it to the host.
+        CHECK_VULKAN(vkWaitForFences(device->logical_device(),
+                                     1,
+                                     &fence[slot],
+                                     true,
+                                     std::numeric_limits<uint64_t>::max()));
         std::memcpy(img.data(), img_readback_buf->map(), img_readback_buf->size());
         img_readback_buf->unmap();
+
+    #ifdef REPORT_RAY_STATS
+        std::memcpy(ray_counts.data(),
+                    ray_stats_readback_buf->map(),
+                    ray_counts.size() * sizeof(uint16_t));
+        ray_stats_readback_buf->unmap();
+
+        slot_total_rays[slot] = std::accumulate(
+            ray_counts.begin(),
+            ray_counts.end(),
+            uint64_t(0),
+            [](const uint64_t &total, const uint16_t &c) { return total + c; });
+    #endif
     }
 
-#ifdef REPORT_RAY_STATS
-    std::memcpy(ray_counts.data(),
-                ray_stats_readback_buf->map(),
-                ray_counts.size() * sizeof(uint16_t));
-    ray_stats_readback_buf->unmap();
+    slot_submitted[slot] = true;
 
-    const uint64_t total_rays =
-        std::accumulate(ray_counts.begin(),
-                        ray_counts.end(),
-                        uint64_t(0),
-                        [](const uint64_t &total, const uint16_t &c) { return total + c; });
-    stats.rays_per_second = total_rays / (stats.render_time * 1.0e-3);
-#endif
+    // Read back statistics for the previously completed frame slot. The results lag
+    // the displayed frame by one render() call, which lets the host avoid stalling
+    // on the GPU work that was just submitted (the perf counters are double-buffered).
+    if (slot_submitted[prev_slot]) {
+        std::array<uint64_t, TIMING_QUERY_COUNT> render_timestamps;
+        CHECK_VULKAN(vkGetQueryPoolResults(device->logical_device(),
+                                           timing_query_pool,
+                                           prev_slot * TIMING_QUERY_COUNT,
+                                           TIMING_QUERY_COUNT,
+                                           render_timestamps.size() * sizeof(uint64_t),
+                                           render_timestamps.data(),
+                                           sizeof(uint64_t),
+                                           VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+        const double timestamp_freq = device->get_timestamp_frequency();
+        stats.frame_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                timestamp_freq,
+                                                TIMING_QUERY_FRAME_BEGIN,
+                                                TIMING_QUERY_FRAME_END);
+        stats.render_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                 timestamp_freq,
+                                                 TIMING_QUERY_RAYTRACING_BEGIN,
+                                                 TIMING_QUERY_RAYTRACING_END);
+        stats.tonemap_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                  timestamp_freq,
+                                                  TIMING_QUERY_TONEMAP_BEGIN,
+                                                  TIMING_QUERY_FRAME_END);
+    #ifdef ENABLE_OIDN
+        if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
+            stats.denoise_time = slot_denoise_time_ms[prev_slot];
+        } else {
+            stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                      timestamp_freq,
+                                                      TIMING_QUERY_DENOISE_BEGIN,
+                                                      TIMING_QUERY_TONEMAP_BEGIN);
+        }
+    #endif
+    #ifdef REPORT_RAY_STATS
+        stats.rays_per_second =
+            stats.render_time > 0.f
+                ? slot_total_rays[prev_slot] / (stats.render_time * 1.0e-3)
+                : 0.0;
+    #endif
+    }
 
+    frame_slot = (frame_slot + 1) % MAX_FRAMES_IN_FLIGHT;
     ++frame_id;
     return stats;
 }
@@ -1523,190 +1584,198 @@ void RenderVulkan::record_command_buffers()
 
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    CHECK_VULKAN(vkBeginCommandBuffer(render_cmd_buf, &begin_info));
-
-    vkCmdResetQueryPool(render_cmd_buf, timing_query_pool, 0, TIMING_QUERY_COUNT);
-
-    vkCmdWriteTimestamp(render_cmd_buf,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        timing_query_pool,
-                        TIMING_QUERY_FRAME_BEGIN);
-
-    vkCmdBindPipeline(
-        render_cmd_buf, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline.handle());
 
     const std::vector<VkDescriptorSet> descriptor_sets = {desc_set, textures_desc_set};
 
-    vkCmdBindDescriptorSets(render_cmd_buf,
-                            VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                            pipeline_layout,
-                            0,
-                            descriptor_sets.size(),
-                            descriptor_sets.data(),
-                            0,
-                            nullptr);
+    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
+        // Each in-flight slot owns a private block of timestamp queries so that the
+        // host can read back a previous slot's results without racing the GPU.
+        const uint32_t query_base = slot * TIMING_QUERY_COUNT;
 
-    VkStridedDeviceAddressRegionKHR callable_table = {};
-    callable_table.deviceAddress = 0;
+        CHECK_VULKAN(vkBeginCommandBuffer(render_cmd_buf[slot], &begin_info));
 
-    vkCmdWriteTimestamp(render_cmd_buf,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        timing_query_pool,
-                        TIMING_QUERY_RAYTRACING_BEGIN);
-    vkrt::CmdTraceRaysKHR(render_cmd_buf,
-                          &shader_table.raygen,
-                          &shader_table.miss,
-                          &shader_table.hitgroup,
-                          &callable_table,
-                          render_target->dims().x,
-                          render_target->dims().y,
-                          1);
-    vkCmdWriteTimestamp(render_cmd_buf,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        timing_query_pool,
-                        TIMING_QUERY_RAYTRACING_END);
+        vkCmdResetQueryPool(
+            render_cmd_buf[slot], timing_query_pool, query_base, TIMING_QUERY_COUNT);
 
-    VkBufferMemoryBarrier buf_barrier{};
-    buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    buf_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    buf_barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    buf_barrier.buffer = accum_buffer->handle();
-    buf_barrier.offset = 0;
-    buf_barrier.size = VK_WHOLE_SIZE;
+        vkCmdWriteTimestamp(render_cmd_buf[slot],
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            timing_query_pool,
+                            query_base + TIMING_QUERY_FRAME_BEGIN);
 
-    vkCmdPipelineBarrier(render_cmd_buf,
-                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         0,
-                         0, nullptr,
-                         1, &buf_barrier,
-                         0, nullptr);
+        vkCmdBindPipeline(
+            render_cmd_buf[slot], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline.handle());
 
-    vkCmdWriteTimestamp(render_cmd_buf,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        timing_query_pool,
-                        TIMING_QUERY_DENOISE_BEGIN);
+        vkCmdBindDescriptorSets(render_cmd_buf[slot],
+                                VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                                pipeline_layout,
+                                0,
+                                descriptor_sets.size(),
+                                descriptor_sets.data(),
+                                0,
+                                nullptr);
 
-    CHECK_VULKAN(vkEndCommandBuffer(render_cmd_buf));
+        VkStridedDeviceAddressRegionKHR callable_table = {};
+        callable_table.deviceAddress = 0;
 
-    // Tonemap
-    CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf, &begin_info));
+        vkCmdWriteTimestamp(render_cmd_buf[slot],
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            timing_query_pool,
+                            query_base + TIMING_QUERY_RAYTRACING_BEGIN);
+        vkrt::CmdTraceRaysKHR(render_cmd_buf[slot],
+                              &shader_table.raygen,
+                              &shader_table.miss,
+                              &shader_table.hitgroup,
+                              &callable_table,
+                              render_target->dims().x,
+                              render_target->dims().y,
+                              1);
+        vkCmdWriteTimestamp(render_cmd_buf[slot],
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            timing_query_pool,
+                            query_base + TIMING_QUERY_RAYTRACING_END);
 
-    vkCmdBindPipeline(
-        tonemap_cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
+        VkBufferMemoryBarrier buf_barrier{};
+        buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        buf_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        buf_barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        buf_barrier.buffer = accum_buffer->handle();
+        buf_barrier.offset = 0;
+        buf_barrier.size = VK_WHOLE_SIZE;
 
-    vkCmdBindDescriptorSets(tonemap_cmd_buf,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipeline_layout,
-                            0,
-                            descriptor_sets.size(),
-                            descriptor_sets.data(),
-                            0,
-                            nullptr);
+        vkCmdPipelineBarrier(render_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0,
+                             0, nullptr,
+                             1, &buf_barrier,
+                             0, nullptr);
 
-    vkCmdWriteTimestamp(tonemap_cmd_buf,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        timing_query_pool,
-                        TIMING_QUERY_TONEMAP_BEGIN);
+        vkCmdWriteTimestamp(render_cmd_buf[slot],
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            timing_query_pool,
+                            query_base + TIMING_QUERY_DENOISE_BEGIN);
 
-    glm::uvec2 dispatch_dim = render_target->dims();
-    glm::uvec2 workgroup_dim(16, 16);
-    dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
+        CHECK_VULKAN(vkEndCommandBuffer(render_cmd_buf[slot]));
 
-    vkCmdDispatch(tonemap_cmd_buf,
-                  dispatch_dim.x,
-                  dispatch_dim.y,
-                  1);
+        // Tonemap
+        CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf[slot], &begin_info));
 
-    vkCmdWriteTimestamp(tonemap_cmd_buf,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        timing_query_pool,
-                        TIMING_QUERY_FRAME_END);
+        vkCmdBindPipeline(
+            tonemap_cmd_buf[slot], VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
 
-    CHECK_VULKAN(vkEndCommandBuffer(tonemap_cmd_buf));
+        vkCmdBindDescriptorSets(tonemap_cmd_buf[slot],
+                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                pipeline_layout,
+                                0,
+                                descriptor_sets.size(),
+                                descriptor_sets.data(),
+                                0,
+                                nullptr);
 
-    // Readback
-    CHECK_VULKAN(vkBeginCommandBuffer(readback_cmd_buf, &begin_info));
+        vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            timing_query_pool,
+                            query_base + TIMING_QUERY_TONEMAP_BEGIN);
 
-    VkImageMemoryBarrier img_barrier{};
-    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    img_barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    img_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    img_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    img_barrier.image = render_target->image_handle();
-    img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    img_barrier.subresourceRange.baseMipLevel = 0;
-    img_barrier.subresourceRange.levelCount = 1;
-    img_barrier.subresourceRange.baseArrayLayer = 0;
-    img_barrier.subresourceRange.layerCount = 1;
+        glm::uvec2 dispatch_dim = render_target->dims();
+        glm::uvec2 workgroup_dim(16, 16);
+        dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
 
-    buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
-    buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    buf_barrier.buffer = img_readback_buf->handle();
+        vkCmdDispatch(tonemap_cmd_buf[slot],
+                      dispatch_dim.x,
+                      dispatch_dim.y,
+                      1);
 
-    vkCmdPipelineBarrier(readback_cmd_buf,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0,
-                         0, nullptr,
-                         1, &buf_barrier,
-                         1, &img_barrier);
+        vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            timing_query_pool,
+                            query_base + TIMING_QUERY_FRAME_END);
 
-    VkImageSubresourceLayers copy_subresource = {};
-    copy_subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copy_subresource.mipLevel = 0;
-    copy_subresource.baseArrayLayer = 0;
-    copy_subresource.layerCount = 1;
+        CHECK_VULKAN(vkEndCommandBuffer(tonemap_cmd_buf[slot]));
 
-    VkBufferImageCopy img_copy = {};
-    img_copy.bufferOffset = 0;
-    img_copy.bufferRowLength = 0;
-    img_copy.bufferImageHeight = 0;
-    img_copy.imageSubresource = copy_subresource;
-    img_copy.imageOffset.x = 0;
-    img_copy.imageOffset.y = 0;
-    img_copy.imageOffset.z = 0;
-    img_copy.imageExtent.width = render_target->dims().x;
-    img_copy.imageExtent.height = render_target->dims().y;
-    img_copy.imageExtent.depth = 1;
+        // Readback
+        CHECK_VULKAN(vkBeginCommandBuffer(readback_cmd_buf[slot], &begin_info));
 
-    vkCmdCopyImageToBuffer(readback_cmd_buf,
-                           render_target->image_handle(),
-                           VK_IMAGE_LAYOUT_GENERAL,
-                           img_readback_buf->handle(),
-                           1,
-                           &img_copy);
+        VkImageMemoryBarrier img_barrier{};
+        img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        img_barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        img_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        img_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        img_barrier.image = render_target->image_handle();
+        img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        img_barrier.subresourceRange.baseMipLevel = 0;
+        img_barrier.subresourceRange.levelCount = 1;
+        img_barrier.subresourceRange.baseArrayLayer = 0;
+        img_barrier.subresourceRange.layerCount = 1;
 
-    buf_barrier.srcAccessMask = buf_barrier.dstAccessMask;
-    buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    vkCmdPipelineBarrier(readback_cmd_buf,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         0,
-                         0, nullptr,
-                         1, &buf_barrier,
-                         0, 0);
+        buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
+        buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        buf_barrier.buffer = img_readback_buf->handle();
+
+        vkCmdPipelineBarrier(readback_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0,
+                             0, nullptr,
+                             1, &buf_barrier,
+                             1, &img_barrier);
+
+        VkImageSubresourceLayers copy_subresource = {};
+        copy_subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy_subresource.mipLevel = 0;
+        copy_subresource.baseArrayLayer = 0;
+        copy_subresource.layerCount = 1;
+
+        VkBufferImageCopy img_copy = {};
+        img_copy.bufferOffset = 0;
+        img_copy.bufferRowLength = 0;
+        img_copy.bufferImageHeight = 0;
+        img_copy.imageSubresource = copy_subresource;
+        img_copy.imageOffset.x = 0;
+        img_copy.imageOffset.y = 0;
+        img_copy.imageOffset.z = 0;
+        img_copy.imageExtent.width = render_target->dims().x;
+        img_copy.imageExtent.height = render_target->dims().y;
+        img_copy.imageExtent.depth = 1;
+
+        vkCmdCopyImageToBuffer(readback_cmd_buf[slot],
+                               render_target->image_handle(),
+                               VK_IMAGE_LAYOUT_GENERAL,
+                               img_readback_buf->handle(),
+                               1,
+                               &img_copy);
+
+        buf_barrier.srcAccessMask = buf_barrier.dstAccessMask;
+        buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(readback_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0,
+                             0, nullptr,
+                             1, &buf_barrier,
+                             0, 0);
 
 #ifdef REPORT_RAY_STATS
-    img_copy.bufferOffset = 0;
-    img_copy.bufferRowLength = 0;
-    img_copy.bufferImageHeight = 0;
-    img_copy.imageSubresource = copy_subresource;
-    img_copy.imageOffset.x = 0;
-    img_copy.imageOffset.y = 0;
-    img_copy.imageOffset.z = 0;
-    img_copy.imageExtent.width = render_target->dims().x;
-    img_copy.imageExtent.height = render_target->dims().y;
-    img_copy.imageExtent.depth = 1;
+        img_copy.bufferOffset = 0;
+        img_copy.bufferRowLength = 0;
+        img_copy.bufferImageHeight = 0;
+        img_copy.imageSubresource = copy_subresource;
+        img_copy.imageOffset.x = 0;
+        img_copy.imageOffset.y = 0;
+        img_copy.imageOffset.z = 0;
+        img_copy.imageExtent.width = render_target->dims().x;
+        img_copy.imageExtent.height = render_target->dims().y;
+        img_copy.imageExtent.depth = 1;
 
-    vkCmdCopyImageToBuffer(readback_cmd_buf,
-                           ray_stats->image_handle(),
-                           VK_IMAGE_LAYOUT_GENERAL,
-                           ray_stats_readback_buf->handle(),
-                           1,
-                           &img_copy);
+        vkCmdCopyImageToBuffer(readback_cmd_buf[slot],
+                               ray_stats->image_handle(),
+                               VK_IMAGE_LAYOUT_GENERAL,
+                               ray_stats_readback_buf->handle(),
+                               1,
+                               &img_copy);
 #endif
 
-    CHECK_VULKAN(vkEndCommandBuffer(readback_cmd_buf));
+        CHECK_VULKAN(vkEndCommandBuffer(readback_cmd_buf[slot]));
+    }
 }
