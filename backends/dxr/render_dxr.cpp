@@ -1009,6 +1009,10 @@ void RenderDXR::create_device_objects()
         align_to(5 * sizeof(glm::vec4), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT),
         D3D12_RESOURCE_STATE_GENERIC_READ);
 
+    // Keep the view parameter buffer persistently mapped; it is written once per
+    // frame and the GPU reads it, so the CPU never needs to read it back.
+    view_param_mapping = static_cast<uint8_t *>(view_param_buf.map());
+
     // Our query heap stores timestamps for the frame and its major GPU passes,
     // with one set of queries per in-flight frame slot.
     D3D12_QUERY_HEAP_DESC timing_query_heap_desc = {};
@@ -1224,7 +1228,7 @@ void RenderDXR::update_view_parameters(const glm::vec3 &pos,
     const glm::vec3 dir_dv = -glm::normalize(glm::cross(dir_du, dir)) * img_plane_size.y;
     const glm::vec3 dir_top_left = dir - 0.5f * dir_du - 0.5f * dir_dv;
 
-    uint8_t *buf = static_cast<uint8_t *>(view_param_buf.map());
+    uint8_t *buf = view_param_mapping;
     {
         glm::vec4 *vecs = reinterpret_cast<glm::vec4 *>(buf);
         vecs[0] = glm::vec4(pos, 0.f);
@@ -1236,8 +1240,6 @@ void RenderDXR::update_view_parameters(const glm::vec3 &pos,
         uint32_t *fid = reinterpret_cast<uint32_t *>(buf + 4 * sizeof(glm::vec4));
         *fid = frame_id;
     }
-
-    view_param_buf.unmap();
 }
 
 void RenderDXR::build_descriptor_heap()

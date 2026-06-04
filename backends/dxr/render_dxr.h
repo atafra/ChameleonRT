@@ -36,6 +36,11 @@ struct RenderDXR : RenderBackend {
 
     dxr::Buffer view_param_buf, instance_buf, material_param_buf, light_buf;
 
+    // The view parameter upload buffer is written once per frame, so it is kept
+    // persistently mapped for the lifetime of the resource to avoid the per-frame
+    // Map/Unmap overhead.
+    uint8_t *view_param_mapping = nullptr;
+
     // Per-slot framebuffer / ray-stats readback buffers.
     dxr::Buffer img_readback_buf[MAX_FRAMES_IN_FLIGHT];
     dxr::Buffer ray_stats_readback_buf[MAX_FRAMES_IN_FLIGHT];
