@@ -4,6 +4,15 @@
 #include "scene.h"
 #include <glm/glm.hpp>
 
+// A single named interval of the frame, expressed in milliseconds relative to
+// the frame's begin timestamp. Overlapping spans (e.g. async OIDN interop) are
+// allowed and simply share time ranges.
+struct RenderTimelineSpan {
+    const char *name = "";
+    float start_ms = 0;
+    float end_ms = 0;
+};
+
 struct RenderStats {
     float render_time = 0;
     float frame_time = 0;
@@ -14,10 +23,17 @@ struct RenderStats {
     // (e.g. async OIDN interop), so their individual times overlap and must not be
     // summed as disjoint intervals. frame_time remains the authoritative total.
     bool passes_overlap = false;
+    // Ordered spans relative to frame begin, used to visualize the frame timeline.
+    // Empty if the backend does not provide timeline data.
+    std::vector<RenderTimelineSpan> timeline;
 };
 
 struct RenderBackend {
     std::vector<uint32_t> img;
+
+    // When true, the backend populates RenderStats::timeline with per-pass spans.
+    // The app toggles this so timeline data is only gathered while it is displayed.
+    bool collect_timeline = false;
 
     virtual ~RenderBackend() {}
 

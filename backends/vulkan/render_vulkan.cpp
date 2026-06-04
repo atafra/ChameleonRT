@@ -1286,6 +1286,22 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
                                                   timestamp_freq,
                                                   TIMING_QUERY_TONEMAP_BEGIN,
                                                   TIMING_QUERY_FRAME_END);
+
+        // Offset of a timestamp from the frame begin, in milliseconds. Used to
+        // place the timeline spans relative to a common frame origin.
+        auto offset_ms = [&](TimingQuery query) {
+            return static_cast<float>(
+                static_cast<double>(render_timestamps[query] -
+                                    render_timestamps[TIMING_QUERY_FRAME_BEGIN]) /
+                timestamp_freq * 1e3);
+        };
+
+        stats.timeline.clear();
+        if (collect_timeline) {
+            stats.timeline.push_back({"Ray Tracing",
+                                      offset_ms(TIMING_QUERY_RAYTRACING_BEGIN),
+                                      offset_ms(TIMING_QUERY_RAYTRACING_END)});
+        }
     #ifdef ENABLE_OIDN
         if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
             stats.denoise_time = slot_denoise_time_ms[prev_slot];
@@ -1302,8 +1318,19 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
             // authoritative end-to-end cost.
             stats.passes_overlap = oidn_interop_mode == OIDNInteropMode::TimelineSemaphore ||
                                    oidn_interop_mode == OIDNInteropMode::BinarySemaphore;
+
+            if (collect_timeline) {
+                stats.timeline.push_back({"Denoise",
+                                          offset_ms(TIMING_QUERY_DENOISE_BEGIN),
+                                          offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
+            }
         }
     #endif
+        if (collect_timeline) {
+            stats.timeline.push_back({"Tonemap",
+                                      offset_ms(TIMING_QUERY_TONEMAP_BEGIN),
+                                      offset_ms(TIMING_QUERY_FRAME_END)});
+        }
     #ifdef REPORT_RAY_STATS
         stats.rays_per_second =
             stats.render_time > 0.f
@@ -1630,7 +1657,7 @@ void RenderVulkan::record_command_buffers()
         callable_table.deviceAddress = 0;
 
         vkCmdWriteTimestamp(render_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_RAYTRACING_BEGIN);
         vkrt::CmdTraceRaysKHR(render_cmd_buf[slot],
@@ -1663,7 +1690,7 @@ void RenderVulkan::record_command_buffers()
                              0, nullptr);
 
         vkCmdWriteTimestamp(render_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_DENOISE_BEGIN);
 
@@ -1685,7 +1712,7 @@ void RenderVulkan::record_command_buffers()
                                 nullptr);
 
         vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_TONEMAP_BEGIN);
 
