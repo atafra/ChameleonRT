@@ -245,6 +245,10 @@ void run_app(const std::vector<std::string> &args,
     const std::string image_output = "chameleonrt.png";
     const std::string display_frontend = display->name();
 
+    const size_t stats_window = 120;
+    std::array<RenderStats, 120> stats_history;
+    size_t stats_history_count = 0;
+    size_t stats_history_index = 0;
     size_t frame_id = 0;
     float render_time = 0.f;
     float frame_time = 0.f;
@@ -349,18 +353,41 @@ void run_app(const std::vector<std::string> &args,
         }
 
         if (frame_id == 1) {
-            render_time = stats.render_time;
-            frame_time = stats.frame_time;
-            denoise_time = stats.denoise_time;
-            tonemap_time = stats.tonemap_time;
-            rays_per_second = stats.rays_per_second;
-        } else {
-            render_time += stats.render_time;
-            frame_time += stats.frame_time;
-            denoise_time += stats.denoise_time;
-            tonemap_time += stats.tonemap_time;
-            rays_per_second += stats.rays_per_second;
+            stats_history_count = 0;
+            stats_history_index = 0;
+            render_time = 0.f;
+            frame_time = 0.f;
+            denoise_time = 0.f;
+            tonemap_time = 0.f;
+            rays_per_second = 0.f;
         }
+
+        if (stats_history_count == stats_window) {
+            const RenderStats &old_stats = stats_history[stats_history_index];
+            render_time -= old_stats.render_time;
+            frame_time -= old_stats.frame_time;
+            denoise_time -= old_stats.denoise_time;
+            tonemap_time -= old_stats.tonemap_time;
+            rays_per_second -= old_stats.rays_per_second;
+        } else {
+            ++stats_history_count;
+        }
+
+        stats_history[stats_history_index] = stats;
+        stats_history_index = (stats_history_index + 1) % stats_window;
+
+        render_time += stats.render_time;
+        frame_time += stats.frame_time;
+        denoise_time += stats.denoise_time;
+        tonemap_time += stats.tonemap_time;
+        rays_per_second += stats.rays_per_second;
+
+        const float stats_sample_count = static_cast<float>(stats_history_count);
+        const float avg_render_time = render_time / stats_sample_count;
+        const float avg_frame_time = frame_time / stats_sample_count;
+        const float avg_denoise_time = denoise_time / stats_sample_count;
+        const float avg_tonemap_time = tonemap_time / stats_sample_count;
+        const float avg_rays_per_second = rays_per_second / stats_sample_count;
 
         display->new_frame();
 
@@ -372,20 +399,20 @@ void run_app(const std::vector<std::string> &args,
                     1000.0f / ImGui::GetIO().Framerate,
                     ImGui::GetIO().Framerate);
         ImGui::Text("GPU Frame Time: %.3f ms/frame (%.1f FPS)",
-                    frame_time / frame_id,
-                    1000.f / (frame_time / frame_id));
+                    avg_frame_time,
+                    1000.f / avg_frame_time);
         ImGui::Text("Render Time: %.3f ms/frame (%.1f FPS)",
-                    render_time / frame_id,
-                    1000.f / (render_time / frame_id));
-        if (denoise_time > 0.f) {
-            ImGui::Text("Denoise Time: %.3f ms/frame", denoise_time / frame_id);
+                    avg_render_time,
+                    1000.f / avg_render_time);
+        if (avg_denoise_time > 0.f) {
+            ImGui::Text("Denoise Time: %.3f ms/frame", avg_denoise_time);
         }
-        if (tonemap_time > 0.f) {
-            ImGui::Text("Tonemap Time: %.3f ms/frame", tonemap_time / frame_id);
+        if (avg_tonemap_time > 0.f) {
+            ImGui::Text("Tonemap Time: %.3f ms/frame", avg_tonemap_time);
         }
 
         if (stats.rays_per_second > 0) {
-            const std::string rays_per_sec = pretty_print_count(rays_per_second / frame_id);
+            const std::string rays_per_sec = pretty_print_count(avg_rays_per_second);
             ImGui::Text("Rays per-second: %sRay/s", rays_per_sec.c_str());
         }
 
