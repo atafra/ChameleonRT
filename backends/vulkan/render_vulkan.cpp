@@ -123,6 +123,15 @@ std::string RenderVulkan::name()
     return "Vulkan Ray Tracing";
 }
 
+bool RenderVulkan::supports_ray_stats() const
+{
+#ifdef REPORT_RAY_STATS
+    return true;
+#else
+    return false;
+#endif
+}
+
 #ifdef ENABLE_OIDN
 namespace {
 
@@ -1242,16 +1251,20 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         img_readback_buf->unmap();
 
     #ifdef REPORT_RAY_STATS
-        std::memcpy(ray_counts.data(),
-                    ray_stats_readback_buf->map(),
-                    ray_counts.size() * sizeof(uint16_t));
-        ray_stats_readback_buf->unmap();
+        if (collect_ray_stats) {
+            std::memcpy(ray_counts.data(),
+                        ray_stats_readback_buf->map(),
+                        ray_counts.size() * sizeof(uint16_t));
+            ray_stats_readback_buf->unmap();
 
-        slot_total_rays[slot] = std::accumulate(
-            ray_counts.begin(),
-            ray_counts.end(),
-            uint64_t(0),
-            [](const uint64_t &total, const uint16_t &c) { return total + c; });
+            slot_total_rays[slot] = std::accumulate(
+                ray_counts.begin(),
+                ray_counts.end(),
+                uint64_t(0),
+                [](const uint64_t &total, const uint16_t &c) { return total + c; });
+        } else {
+            slot_total_rays[slot] = 0;
+        }
     #endif
     }
 

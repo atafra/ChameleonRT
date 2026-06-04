@@ -278,6 +278,13 @@ void run_app(const std::vector<std::string> &args,
     bool resizing = false;
     bool show_timeline = true;
     bool average_timeline = false;
+    bool show_ray_stats = true;
+    // Whether the active backend can produce ray statistics at all. When it
+    // cannot, the ray stats controls are hidden and collection stays disabled.
+    const bool ray_stats_supported = renderer->supports_ray_stats();
+    if (!ray_stats_supported) {
+        show_ray_stats = false;
+    }
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -348,6 +355,13 @@ void run_app(const std::vector<std::string> &args,
                       << (show_timeline ? "enabled" : "disabled") << "\n";
         }
         renderer->collect_timeline = show_timeline;
+        if (ray_stats_supported) {
+            if (renderer->collect_ray_stats != show_ray_stats) {
+                std::cout << "Ray stats collection "
+                          << (show_ray_stats ? "enabled" : "disabled") << "\n";
+            }
+            renderer->collect_ray_stats = show_ray_stats;
+        }
         RenderStats stats = renderer->render(
             camera.eye(), camera.dir(), camera.up(), fov_y, camera_changed, need_readback);
 
@@ -568,6 +582,12 @@ void run_app(const std::vector<std::string> &args,
         if (stats.rays_per_second > 0) {
             const std::string rays_per_sec = pretty_print_count(avg_rays_per_second);
             ImGui::Text("Rays per-second: %sRay/s", rays_per_sec.c_str());
+        }
+        // Collecting ray stats requires a full-resolution readback and per-pixel
+        // reduction each frame, so let the user disable it when not needed. Only
+        // shown when the backend can actually produce ray statistics.
+        if (ray_stats_supported) {
+            ImGui::Checkbox("Collect Ray Stats", &show_ray_stats);
         }
         ImGui::End();
 

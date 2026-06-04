@@ -124,6 +124,8 @@ struct RenderVulkan : RenderBackend {
 
     std::string name() override;
 
+    bool supports_ray_stats() const override;
+
     #ifdef ENABLE_OIDN
     std::string get_oidn_interop_mode() override;
     bool set_oidn_interop_mode(const std::string &mode) override;

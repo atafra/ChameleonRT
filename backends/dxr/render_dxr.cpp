@@ -111,6 +111,15 @@ std::string RenderDXR::name()
     return "DirectX Ray Tracing";
 }
 
+bool RenderDXR::supports_ray_stats() const
+{
+#ifdef REPORT_RAY_STATS
+    return true;
+#else
+    return false;
+#endif
+}
+
 #ifdef ENABLE_OIDN
 namespace {
 
@@ -227,6 +236,15 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                              render_target.linear_row_pitch() * fb_height,
                                              D3D12_RESOURCE_STATE_COPY_DEST);
 
+    // Keep the framebuffer readback buffer persistently mapped to avoid
+    // per-frame Map/Unmap overhead.
+    {
+        D3D12_RANGE read_range;
+        read_range.Begin = 0;
+        read_range.End = img_readback_buf.size();
+        img_readback_mapping = static_cast<uint8_t *>(img_readback_buf.map(read_range));
+    }
+
 #ifdef REPORT_RAY_STATS
     ray_stats = dxr::Texture2D::device(device.Get(),
                                        glm::uvec2(fb_width, fb_height),
@@ -238,6 +256,15 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                                    ray_stats.linear_row_pitch() * fb_height,
                                                    D3D12_RESOURCE_STATE_COPY_DEST);
     ray_counts.resize(ray_stats.dims().x * ray_stats.dims().y, 0);
+
+    // Keep the ray stats readback buffer persistently mapped as well.
+    {
+        D3D12_RANGE read_range;
+        read_range.Begin = 0;
+        read_range.End = ray_stats_readback_buf.size();
+        ray_stats_readback_mapping =
+            static_cast<uint8_t *>(ray_stats_readback_buf.map(read_range));
+    }
 #endif
 
     if (rt_pipeline.get()) {
@@ -743,7 +770,10 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     }
 
 #ifdef REPORT_RAY_STATS
-    const bool need_readback = true;
+    // Ray stats require reading the framebuffer/ray-count textures back, but only
+    // pay that cost when the figure is actually being collected.
+    const bool need_readback =
+        collect_ray_stats || !native_display || readback_framebuffer;
 #else
     const bool need_readback = !native_display || readback_framebuffer;
 #endif
@@ -763,13 +793,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     // Read back the timestamps for DispatchRays to compute the true time spent rendering
     {
         DXR_FRAME_DIAGNOSTIC("timestamp readback begin");
-        D3D12_RANGE read_range;
-        read_range.Begin = 0;
-        read_range.End = query_resolve_buffer.size();
-        const uint64_t *timestamps =
-            static_cast<const uint64_t *>(query_resolve_buffer.map(read_range));
-        uint64_t timestamp_freq = 0;
-        cmd_queue->GetTimestampFrequency(&timestamp_freq);
+        const uint64_t *timestamps = query_resolve_mapping;
 
         stats.frame_time = elapsed_timestamp_ms(timestamps,
                                                 timestamp_freq,
@@ -823,53 +847,49 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
                                       offset_ms(TIMING_QUERY_FRAME_END)});
         }
 
-        query_resolve_buffer.unmap();
         DXR_FRAME_DIAGNOSTIC("timestamp readback end");
     }
 
     if (need_readback) {
         DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback begin");
-        // Map the readback buf and copy out the rendered image
+        // Copy out the rendered image from the persistently mapped readback buffer.
         // We may have needed some padding for the readback buffer, so we might have to read
         // row by row.
-        D3D12_RANGE read_range;
-        read_range.Begin = 0;
-        read_range.End = img_readback_buf.size();
         if (render_target.linear_row_pitch() ==
             render_target.dims().x * render_target.pixel_size()) {
-            std::memcpy(img.data(), img_readback_buf.map(read_range), img_readback_buf.size());
+            std::memcpy(img.data(), img_readback_mapping, img_readback_buf.size());
         } else {
-            uint8_t *buf = static_cast<uint8_t *>(img_readback_buf.map(read_range));
+            uint8_t *buf = img_readback_mapping;
             for (uint32_t y = 0; y < render_target.dims().y; ++y) {
                 std::memcpy(img.data() + y * render_target.dims().x,
                             buf + y * render_target.linear_row_pitch(),
                             render_target.dims().x * render_target.pixel_size());
             }
         }
-        img_readback_buf.unmap();
         DXR_FRAME_DIAGNOSTIC("framebuffer CPU readback end");
     }
 
 #ifdef REPORT_RAY_STATS
-    if (ray_stats.linear_row_pitch() == ray_stats.dims().x * ray_stats.pixel_size()) {
-        std::memcpy(
-            ray_counts.data(), ray_stats_readback_buf.map(), ray_stats_readback_buf.size());
-    } else {
-        uint8_t *buf = static_cast<uint8_t *>(ray_stats_readback_buf.map());
-        for (uint32_t y = 0; y < ray_stats.dims().y; ++y) {
-            std::memcpy(ray_counts.data() + y * ray_stats.dims().x,
-                        buf + y * ray_stats.linear_row_pitch(),
-                        ray_stats.dims().x * ray_stats.pixel_size());
+    if (collect_ray_stats) {
+        if (ray_stats.linear_row_pitch() == ray_stats.dims().x * ray_stats.pixel_size()) {
+            std::memcpy(
+                ray_counts.data(), ray_stats_readback_mapping, ray_stats_readback_buf.size());
+        } else {
+            uint8_t *buf = ray_stats_readback_mapping;
+            for (uint32_t y = 0; y < ray_stats.dims().y; ++y) {
+                std::memcpy(ray_counts.data() + y * ray_stats.dims().x,
+                            buf + y * ray_stats.linear_row_pitch(),
+                            ray_stats.dims().x * ray_stats.pixel_size());
+            }
         }
-    }
-    ray_stats_readback_buf.unmap();
 
-    const uint64_t total_rays =
-        std::accumulate(ray_counts.begin(),
-                        ray_counts.end(),
-                        uint64_t(0),
-                        [](const uint64_t &total, const uint16_t &c) { return total + c; });
-    stats.rays_per_second = total_rays / (stats.render_time * 1.0e-3);
+        const uint64_t total_rays =
+            std::accumulate(ray_counts.begin(),
+                            ray_counts.end(),
+                            uint64_t(0),
+                            [](const uint64_t &total, const uint16_t &c) { return total + c; });
+        stats.rays_per_second = total_rays / (stats.render_time * 1.0e-3);
+    }
 #endif
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
@@ -957,6 +977,21 @@ void RenderDXR::create_device_objects()
     // Buffer to readback query results in to
     query_resolve_buffer = dxr::Buffer::readback(
         device.Get(), sizeof(uint64_t) * TIMING_QUERY_COUNT, D3D12_RESOURCE_STATE_COPY_DEST);
+
+    // The timestamp frequency is fixed for the lifetime of the queue, so cache it
+    // once here instead of querying it every frame.
+    CHECK_ERR(cmd_queue->GetTimestampFrequency(&timestamp_freq));
+
+    // Keep the query resolve buffer persistently mapped to avoid per-frame
+    // Map/Unmap overhead. The CPU only reads from it, so map with an empty
+    // written-range on the implicit unmap at resource destruction.
+    {
+        D3D12_RANGE read_range;
+        read_range.Begin = 0;
+        read_range.End = query_resolve_buffer.size();
+        query_resolve_mapping =
+            static_cast<const uint64_t *>(query_resolve_buffer.map(read_range));
+    }
 }
 
 void RenderDXR::build_raytracing_pipeline()

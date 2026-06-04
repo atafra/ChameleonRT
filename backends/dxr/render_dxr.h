@@ -59,6 +59,18 @@ struct RenderDXR : RenderBackend {
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> timing_query_heap;
     dxr::Buffer query_resolve_buffer;
 
+    // The timestamp frequency is a fixed property of the command queue, so it is
+    // queried once and cached instead of per-frame.
+    uint64_t timestamp_freq = 0;
+
+    // Readback buffers are kept persistently mapped for the lifetime of the
+    // resource to avoid the per-frame Map/Unmap overhead.
+    const uint64_t *query_resolve_mapping = nullptr;
+    uint8_t *img_readback_mapping = nullptr;
+#ifdef REPORT_RAY_STATS
+    uint8_t *ray_stats_readback_mapping = nullptr;
+#endif
+
 #ifdef ENABLE_OIDN
     dxr::Buffer denoise_buffer;
     oidn::DeviceRef oidn_device;
@@ -80,6 +92,8 @@ struct RenderDXR : RenderBackend {
     virtual ~RenderDXR();
 
     std::string name() override;
+
+    bool supports_ray_stats() const override;
 
     #ifdef ENABLE_OIDN
     std::string get_oidn_interop_mode() override;

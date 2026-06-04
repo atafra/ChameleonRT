@@ -35,9 +35,25 @@ struct RenderBackend {
     // The app toggles this so timeline data is only gathered while it is displayed.
     bool collect_timeline = false;
 
+    // When true, the backend reads back per-pixel ray counts and reduces them to
+    // compute RenderStats::rays_per_second. This is a full-resolution readback plus
+    // a per-pixel reduction every frame, so the app toggles it to only pay the cost
+    // while the figure is displayed. Only honored by backends built with ray stats
+    // support (e.g. REPORT_RAY_STATS).
+    bool collect_ray_stats = true;
+
     virtual ~RenderBackend() {}
 
     virtual std::string name() = 0;
+
+    // Returns true if the backend was built with ray statistics support and can
+    // populate RenderStats::rays_per_second. Used by the app to decide whether to
+    // expose the ray stats controls. Defaults to false; backends compiled with ray
+    // stats support (e.g. REPORT_RAY_STATS) override this to return true.
+    virtual bool supports_ray_stats() const
+    {
+        return false;
+    }
 
     #ifdef ENABLE_OIDN
     virtual std::string get_oidn_interop_mode()
