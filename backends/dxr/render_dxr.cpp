@@ -783,12 +783,45 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
                                                   timestamp_freq,
                                                   TIMING_QUERY_TONEMAP_BEGIN,
                                                   TIMING_QUERY_FRAME_END);
+
+        // Offset of a timestamp from the frame begin, in milliseconds. Used to
+        // place the timeline spans relative to a common frame origin.
+        auto offset_ms = [&](TimingQuery query) {
+            return static_cast<float>(
+                static_cast<double>(timestamps[query] - timestamps[TIMING_QUERY_FRAME_BEGIN]) /
+                timestamp_freq * 1e3);
+        };
+
+        stats.timeline.clear();
+        if (collect_timeline) {
+            stats.timeline.push_back({"Ray Tracing",
+                                      offset_ms(TIMING_QUERY_RAYTRACING_BEGIN),
+                                      offset_ms(TIMING_QUERY_RAYTRACING_END)});
+        }
 #ifdef ENABLE_OIDN
+        // OIDN runs asynchronously in a separate SYCL context, but in this
+        // application the ray-tracing, denoise, and tonemap passes are
+        // serialized by barriers on shared resources and cannot overlap.
+        // Estimate the denoise cost conservatively as the GPU-visible gap
+        // between the end of ray tracing and the start of tonemapping, which is
+        // an upper bound on the denoise time. The passes are treated as serial.
         stats.denoise_time = elapsed_timestamp_ms(timestamps,
                                                   timestamp_freq,
-                                                  TIMING_QUERY_DENOISE_BEGIN,
+                                                  TIMING_QUERY_RAYTRACING_END,
                                                   TIMING_QUERY_TONEMAP_BEGIN);
+        stats.passes_overlap = false;
+
+        if (collect_timeline) {
+            stats.timeline.push_back({"Denoise (est.)",
+                                      offset_ms(TIMING_QUERY_RAYTRACING_END),
+                                      offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
+        }
 #endif
+        if (collect_timeline) {
+            stats.timeline.push_back({"Tonemap",
+                                      offset_ms(TIMING_QUERY_TONEMAP_BEGIN),
+                                      offset_ms(TIMING_QUERY_FRAME_END)});
+        }
 
         query_resolve_buffer.unmap();
         DXR_FRAME_DIAGNOSTIC("timestamp readback end");
@@ -842,7 +875,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     {
         std::ostringstream msg;
-            << "frame end; render_time_ms=" << stats.render_time
+        msg << "frame end; render_time_ms=" << stats.render_time
             << ", frame_time_ms=" << stats.frame_time
             << ", denoise_time_ms=" << stats.denoise_time
             << ", tonemap_time_ms=" << stats.tonemap_time

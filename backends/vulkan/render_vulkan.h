@@ -90,11 +90,6 @@ struct RenderVulkan : RenderBackend {
     // Whether a given slot has been submitted at least once (so its query
     // results are valid to read back).
     bool slot_submitted[MAX_FRAMES_IN_FLIGHT] = {};
-#ifdef ENABLE_OIDN
-    // Host-measured denoise time per slot, used in the host-blocking interop mode
-    // where the denoiser cannot be timed with GPU timestamps.
-    float slot_denoise_time_ms[MAX_FRAMES_IN_FLIGHT] = {};
-#endif
 #ifdef REPORT_RAY_STATS
     uint64_t slot_total_rays[MAX_FRAMES_IN_FLIGHT] = {};
 #endif

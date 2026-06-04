@@ -1158,14 +1158,11 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
                                      std::numeric_limits<uint64_t>::max()));
         CHECK_VULKAN(vkResetFences(device->logical_device(), 1, &fence[slot]));
 
-        // Denoise the frame, timed on the host: the GPU is idle here and the work
-        // runs on a separate OIDN device, so GPU timestamps cannot measure it.
-        const auto denoise_start = high_resolution_clock::now();
+        // Denoise the frame. The GPU is idle here and the work runs on a
+        // separate OIDN device, so GPU timestamps cannot measure it directly.
+        // The denoise cost is instead estimated from the GPU-visible gap
+        // between ray tracing and tonemapping during stats readback.
         oidn_filter.execute();
-        const auto denoise_end = high_resolution_clock::now();
-        slot_denoise_time_ms[slot] =
-            duration_cast<duration<float, std::milli>>(denoise_end - denoise_start)
-                .count();
     } else if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
         CHECK_VULKAN(
             vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
@@ -1304,7 +1301,16 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         }
     #ifdef ENABLE_OIDN
         if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
-            stats.denoise_time = slot_denoise_time_ms[prev_slot];
+            stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                      timestamp_freq,
+                                                      TIMING_QUERY_RAYTRACING_END,
+                                                      TIMING_QUERY_TONEMAP_BEGIN);
+
+            if (collect_timeline) {
+                stats.timeline.push_back({"Denoise (est.)",
+                                          offset_ms(TIMING_QUERY_RAYTRACING_END),
+                                          offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
+            }
         } else {
             stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
                                                       timestamp_freq,
