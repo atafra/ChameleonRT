@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -437,44 +438,45 @@ void run_app(const std::vector<std::string> &args,
         ImGui::End();
 
         ImGui::Begin("Profiling");
-        ImGui::Text("GPU Frame Time: %.3f ms", avg_frame_time);
-        ImGui::Text("Render Time: %.3f ms", avg_render_time);
-        if (avg_denoise_time > 0.f) {
-            ImGui::Text("Denoise Time: %.3f ms", avg_denoise_time);
-        }
-        if (avg_tonemap_time > 0.f) {
-            ImGui::Text("Tonemap Time: %.3f ms", avg_tonemap_time);
-        }
-        if (stats.passes_overlap) {
-            // In async denoiser modes the render/denoise/tonemap passes run
-            // concurrently on the device, so their times overlap and should not be
-            // summed. GPU Frame Time is the authoritative end-to-end cost.
-            ImGui::TextDisabled(
-                "(passes overlap on device; see GPU Frame Time for total cost)");
-        } else {
-            // GPU frame time not attributed to any of the finer scoped markers
-            // (barriers, queue gaps, work between passes).
-            const float avg_unscoped_time =
-                avg_frame_time - avg_render_time - avg_denoise_time - avg_tonemap_time;
-            ImGui::Text("Unscoped GPU Time: %.3f ms", avg_unscoped_time);
-        }
-
-        if (stats.rays_per_second > 0) {
-            const std::string rays_per_sec = pretty_print_count(avg_rays_per_second);
-            ImGui::Text("Rays per-second: %sRay/s", rays_per_sec.c_str());
-        }
 
         // Frame timeline: one horizontal bar per span, placed by its offset from
         // the frame begin and scaled to the GPU frame time. Overlapping async
         // passes appear on separate rows. The spans are only collected while the
         // timeline is shown, so the checkbox lives outside the data check.
-        ImGui::Separator();
         ImGui::Checkbox("Show Frame Timeline", &show_timeline);
         if (show_timeline) {
             ImGui::Checkbox("Average Timeline", &average_timeline);
         }
 
-        if (show_timeline && !stats.timeline.empty()) {
+        const bool timeline_visible = show_timeline && !stats.timeline.empty();
+
+        if (!timeline_visible) {
+            // Textual per-pass timings. Hidden when the timeline is shown, since the
+            // bars carry the same information (with the timing in each row's label).
+            ImGui::Text("GPU Frame Time: %.3f ms", avg_frame_time);
+            ImGui::Text("Render Time: %.3f ms", avg_render_time);
+            if (avg_denoise_time > 0.f) {
+                ImGui::Text("Denoise Time: %.3f ms", avg_denoise_time);
+            }
+            if (avg_tonemap_time > 0.f) {
+                ImGui::Text("Tonemap Time: %.3f ms", avg_tonemap_time);
+            }
+            if (stats.passes_overlap) {
+                // In async denoiser modes the render/denoise/tonemap passes run
+                // concurrently on the device, so their times overlap and should not
+                // be summed. GPU Frame Time is the authoritative end-to-end cost.
+                ImGui::TextDisabled(
+                    "(passes overlap on device; see GPU Frame Time for total cost)");
+            } else {
+                // GPU frame time not attributed to any of the finer scoped markers
+                // (barriers, queue gaps, work between passes).
+                const float avg_unscoped_time =
+                    avg_frame_time - avg_render_time - avg_denoise_time - avg_tonemap_time;
+                ImGui::Text("Unscoped GPU Time: %.3f ms", avg_unscoped_time);
+            }
+        }
+
+        if (timeline_visible) {
             // Either show the most recent frame's spans, or the per-span average
             // over the history window (matched by name) for a steadier view.
             std::vector<RenderTimelineSpan> timeline = stats.timeline;
@@ -519,28 +521,53 @@ void run_app(const std::vector<std::string> &args,
             if (timeline_extent > 0.f) {
                 ImGui::Text("Frame Timeline (%.3f ms)", timeline_extent);
 
+                // Build each row's "Name: X.XXX ms" label and size the name column
+                // to the widest label so the bars line up in a separate column.
+                std::vector<std::string> labels(timeline.size());
+                float label_width = 0.0f;
+                for (size_t s = 0; s < timeline.size(); ++s) {
+                    const float duration = timeline[s].end_ms - timeline[s].start_ms;
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf), "%s: %.3f ms",
+                                  timeline[s].name, duration);
+                    labels[s] = buf;
+                    label_width = std::max(label_width, ImGui::CalcTextSize(buf).x);
+                }
+                label_width += 8.0f;  // padding between the label and bar columns
+
                 ImDrawList *draw_list = ImGui::GetWindowDrawList();
                 const ImVec2 origin = ImGui::GetCursorScreenPos();
-                const float width = ImGui::GetContentRegionAvail().x;
+                const float total_width = ImGui::GetContentRegionAvail().x;
+                const float bar_area = std::max(total_width - label_width, 1.0f);
                 const float row_height = ImGui::GetTextLineHeight();
                 const float row_spacing = row_height + 4.0f;
-                const float scale = width / timeline_extent;
+                const float scale = bar_area / timeline_extent;
+                const float bar_origin_x = origin.x + label_width;
 
                 int row = 0;
-                for (const RenderTimelineSpan &span : timeline) {
-                    const float x0 = origin.x + span.start_ms * scale;
-                    const float x1 = origin.x + span.end_ms * scale;
+                for (size_t s = 0; s < timeline.size(); ++s) {
+                    const RenderTimelineSpan &span = timeline[s];
                     const float y0 = origin.y + row * row_spacing;
                     const float y1 = y0 + row_height;
+
+                    draw_list->AddText(
+                        ImVec2(origin.x, y0), IM_COL32_WHITE, labels[s].c_str());
+
+                    const float x0 = bar_origin_x + span.start_ms * scale;
+                    const float x1 = bar_origin_x + span.end_ms * scale;
                     draw_list->AddRectFilled(
                         ImVec2(x0, y0), ImVec2(std::max(x1, x0 + 1.0f), y1),
                         timeline_color(span.name), 2.0f);
-                    draw_list->AddText(ImVec2(x0 + 4.0f, y0), IM_COL32_WHITE, span.name);
                     ++row;
                 }
 
-                ImGui::Dummy(ImVec2(width, row * row_spacing));
+                ImGui::Dummy(ImVec2(total_width, row * row_spacing));
             }
+        }
+
+        if (stats.rays_per_second > 0) {
+            const std::string rays_per_sec = pretty_print_count(avg_rays_per_second);
+            ImGui::Text("Rays per-second: %sRay/s", rays_per_sec.c_str());
         }
         ImGui::End();
 
