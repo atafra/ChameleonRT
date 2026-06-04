@@ -10,6 +10,29 @@
 #include "util.h"
 #include <glm/ext.hpp>
 
+namespace {
+
+enum TimingQuery {
+    TIMING_QUERY_FRAME_BEGIN = 0,
+    TIMING_QUERY_RAYTRACING_BEGIN,
+    TIMING_QUERY_RAYTRACING_END,
+    TIMING_QUERY_DENOISE_BEGIN,
+    TIMING_QUERY_TONEMAP_BEGIN,
+    TIMING_QUERY_FRAME_END,
+    TIMING_QUERY_COUNT
+};
+
+float elapsed_timestamp_ms(const uint64_t *timestamps,
+                           double timestamp_freq,
+                           TimingQuery begin,
+                           TimingQuery end)
+{
+    const uint64_t delta = timestamps[end] - timestamps[begin];
+    return static_cast<float>(static_cast<double>(delta) / timestamp_freq * 1e3);
+}
+
+} // namespace
+
 RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
     : device(dev), native_display(true)
 {
@@ -53,7 +76,7 @@ RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
     VkQueryPoolCreateInfo pool_ci = {};
     pool_ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     pool_ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    pool_ci.queryCount = 2;
+    pool_ci.queryCount = TIMING_QUERY_COUNT;
     CHECK_VULKAN(
         vkCreateQueryPool(device->logical_device(), &pool_ci, nullptr, &timing_query_pool));
 }
@@ -1157,18 +1180,35 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pSignalSemaphores = nullptr;
     submit_info.pNext = nullptr;
 
-    // Read back the ray tracing timestamps we recorded
-    std::array<uint64_t, 2> render_timestamps;
+    // Read back the frame timestamps we recorded
+    std::array<uint64_t, TIMING_QUERY_COUNT> render_timestamps;
     CHECK_VULKAN(vkGetQueryPoolResults(device->logical_device(),
                                        timing_query_pool,
                                        0,
-                                       2,
+                                       TIMING_QUERY_COUNT,
                                        render_timestamps.size() * sizeof(uint64_t),
                                        render_timestamps.data(),
                                        sizeof(uint64_t),
                                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
-    stats.render_time = static_cast<double>(render_timestamps[1] - render_timestamps[0]) /
-                        device->get_timestamp_frequency() * 1e3;
+    const double timestamp_freq = device->get_timestamp_frequency();
+    stats.frame_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                            timestamp_freq,
+                                            TIMING_QUERY_FRAME_BEGIN,
+                                            TIMING_QUERY_FRAME_END);
+    stats.render_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                             timestamp_freq,
+                                             TIMING_QUERY_RAYTRACING_BEGIN,
+                                             TIMING_QUERY_RAYTRACING_END);
+    stats.tonemap_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                              timestamp_freq,
+                                              TIMING_QUERY_TONEMAP_BEGIN,
+                                              TIMING_QUERY_FRAME_END);
+#ifdef ENABLE_OIDN
+    stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                              timestamp_freq,
+                                              TIMING_QUERY_DENOISE_BEGIN,
+                                              TIMING_QUERY_TONEMAP_BEGIN);
+#endif
 
 #ifdef REPORT_RAY_STATS
     const bool need_readback = true;
@@ -1485,7 +1525,12 @@ void RenderVulkan::record_command_buffers()
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     CHECK_VULKAN(vkBeginCommandBuffer(render_cmd_buf, &begin_info));
 
-    vkCmdResetQueryPool(render_cmd_buf, timing_query_pool, 0, 2);
+    vkCmdResetQueryPool(render_cmd_buf, timing_query_pool, 0, TIMING_QUERY_COUNT);
+
+    vkCmdWriteTimestamp(render_cmd_buf,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        timing_query_pool,
+                        TIMING_QUERY_FRAME_BEGIN);
 
     vkCmdBindPipeline(
         render_cmd_buf, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline.handle());
@@ -1504,8 +1549,10 @@ void RenderVulkan::record_command_buffers()
     VkStridedDeviceAddressRegionKHR callable_table = {};
     callable_table.deviceAddress = 0;
 
-    vkCmdWriteTimestamp(
-        render_cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timing_query_pool, 0);
+    vkCmdWriteTimestamp(render_cmd_buf,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        timing_query_pool,
+                        TIMING_QUERY_RAYTRACING_BEGIN);
     vkrt::CmdTraceRaysKHR(render_cmd_buf,
                           &shader_table.raygen,
                           &shader_table.miss,
@@ -1514,8 +1561,10 @@ void RenderVulkan::record_command_buffers()
                           render_target->dims().x,
                           render_target->dims().y,
                           1);
-    vkCmdWriteTimestamp(
-        render_cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timing_query_pool, 1);
+    vkCmdWriteTimestamp(render_cmd_buf,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        timing_query_pool,
+                        TIMING_QUERY_RAYTRACING_END);
 
     VkBufferMemoryBarrier buf_barrier{};
     buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -1532,6 +1581,11 @@ void RenderVulkan::record_command_buffers()
                          0, nullptr,
                          1, &buf_barrier,
                          0, nullptr);
+
+    vkCmdWriteTimestamp(render_cmd_buf,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        timing_query_pool,
+                        TIMING_QUERY_DENOISE_BEGIN);
 
     CHECK_VULKAN(vkEndCommandBuffer(render_cmd_buf));
 
@@ -1550,6 +1604,11 @@ void RenderVulkan::record_command_buffers()
                             0,
                             nullptr);
 
+    vkCmdWriteTimestamp(tonemap_cmd_buf,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        timing_query_pool,
+                        TIMING_QUERY_TONEMAP_BEGIN);
+
     glm::uvec2 dispatch_dim = render_target->dims();
     glm::uvec2 workgroup_dim(16, 16);
     dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
@@ -1558,6 +1617,11 @@ void RenderVulkan::record_command_buffers()
                   dispatch_dim.x,
                   dispatch_dim.y,
                   1);
+
+    vkCmdWriteTimestamp(tonemap_cmd_buf,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        timing_query_pool,
+                        TIMING_QUERY_FRAME_END);
 
     CHECK_VULKAN(vkEndCommandBuffer(tonemap_cmd_buf));
 
