@@ -55,7 +55,7 @@ struct RenderDXR : RenderBackend {
     bool frame_diagnostics_active = false;
 #endif
 
-    // Query pool to measure just dispatch rays perf
+    // Query pool to measure GPU frame stage timings
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> timing_query_heap;
     dxr::Buffer query_resolve_buffer;
 

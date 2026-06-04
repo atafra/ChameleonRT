@@ -21,6 +21,29 @@
 
 using Microsoft::WRL::ComPtr;
 
+namespace {
+
+enum TimingQuery {
+    TIMING_QUERY_FRAME_BEGIN = 0,
+    TIMING_QUERY_RAYTRACING_BEGIN,
+    TIMING_QUERY_RAYTRACING_END,
+    TIMING_QUERY_DENOISE_BEGIN,
+    TIMING_QUERY_TONEMAP_BEGIN,
+    TIMING_QUERY_FRAME_END,
+    TIMING_QUERY_COUNT
+};
+
+float elapsed_timestamp_ms(const uint64_t *timestamps,
+                           uint64_t timestamp_freq,
+                           TimingQuery begin,
+                           TimingQuery end)
+{
+    const uint64_t delta = timestamps[end] - timestamps[begin];
+    return static_cast<float>(static_cast<double>(delta) / timestamp_freq * 1e3);
+}
+
+} // namespace
+
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
 bool RenderDXR::frame_diagnostics_enabled() const
 {
@@ -748,9 +771,24 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         uint64_t timestamp_freq = 0;
         cmd_queue->GetTimestampFrequency(&timestamp_freq);
 
-        const uint64_t delta = timestamps[1] - timestamps[0];
-        const double elapsed_time = static_cast<double>(delta) / timestamp_freq * 1e3;
-        stats.render_time = elapsed_time;
+        stats.frame_time = elapsed_timestamp_ms(timestamps,
+                                                timestamp_freq,
+                                                TIMING_QUERY_FRAME_BEGIN,
+                                                TIMING_QUERY_FRAME_END);
+        stats.render_time = elapsed_timestamp_ms(timestamps,
+                                                 timestamp_freq,
+                                                 TIMING_QUERY_RAYTRACING_BEGIN,
+                                                 TIMING_QUERY_RAYTRACING_END);
+        stats.tonemap_time = elapsed_timestamp_ms(timestamps,
+                                                  timestamp_freq,
+                                                  TIMING_QUERY_TONEMAP_BEGIN,
+                                                  TIMING_QUERY_FRAME_END);
+#ifdef ENABLE_OIDN
+        stats.denoise_time = elapsed_timestamp_ms(timestamps,
+                                                  timestamp_freq,
+                                                  TIMING_QUERY_DENOISE_BEGIN,
+                                                  TIMING_QUERY_TONEMAP_BEGIN);
+#endif
 
         query_resolve_buffer.unmap();
         DXR_FRAME_DIAGNOSTIC("timestamp readback end");
@@ -804,7 +842,10 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     {
         std::ostringstream msg;
-        msg << "frame end; render_time_ms=" << stats.render_time
+            << "frame end; render_time_ms=" << stats.render_time
+            << ", frame_time_ms=" << stats.frame_time
+            << ", denoise_time_ms=" << stats.denoise_time
+            << ", tonemap_time_ms=" << stats.tonemap_time
             << ", next_frame_id=" << frame_id + 1
             << ", fence_value=" << fence_value;
         DXR_FRAME_DIAGNOSTIC(msg.str());
@@ -874,16 +915,15 @@ void RenderDXR::create_device_objects()
         align_to(5 * sizeof(glm::vec4), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT),
         D3D12_RESOURCE_STATE_GENERIC_READ);
 
-    // Our query heap will store two timestamps, the time that DispatchRays starts and the time
-    // it ends
+    // Our query heap stores timestamps for the frame and its major GPU passes.
     D3D12_QUERY_HEAP_DESC timing_query_heap_desc = {};
-    timing_query_heap_desc.Count = 2;
+    timing_query_heap_desc.Count = TIMING_QUERY_COUNT;
     timing_query_heap_desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
     device->CreateQueryHeap(&timing_query_heap_desc, IID_PPV_ARGS(&timing_query_heap));
 
     // Buffer to readback query results in to
     query_resolve_buffer = dxr::Buffer::readback(
-        device.Get(), sizeof(uint64_t) * 2, D3D12_RESOURCE_STATE_COPY_DEST);
+        device.Get(), sizeof(uint64_t) * TIMING_QUERY_COUNT, D3D12_RESOURCE_STATE_COPY_DEST);
 }
 
 void RenderDXR::build_raytracing_pipeline()
@@ -1230,22 +1270,22 @@ void RenderDXR::record_command_lists()
     render_cmd_list->SetPipelineState1(rt_pipeline.get());
     render_cmd_list->SetComputeRootSignature(rt_pipeline.global_sig());
 
-    render_cmd_list->EndQuery(timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    render_cmd_list->EndQuery(
+        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_FRAME_BEGIN);
+    render_cmd_list->EndQuery(
+        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_RAYTRACING_BEGIN);
 
     D3D12_DISPATCH_RAYS_DESC dispatch_rays = rt_pipeline.dispatch_rays(render_target.dims());
     render_cmd_list->DispatchRays(&dispatch_rays);
 
-    render_cmd_list->EndQuery(timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
-
-    render_cmd_list->ResolveQueryData(timing_query_heap.Get(),
-                                      D3D12_QUERY_TYPE_TIMESTAMP,
-                                      0,
-                                      2,
-                                      query_resolve_buffer.get(),
-                                      0);
+    render_cmd_list->EndQuery(
+        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_RAYTRACING_END);
                                       
     D3D12_RESOURCE_BARRIER barrier = barrier_uav(accum_buffer);
     render_cmd_list->ResourceBarrier(1, &barrier);
+
+    render_cmd_list->EndQuery(
+        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_DENOISE_BEGIN);
 
     CHECK_ERR(render_cmd_list->Close());
 
@@ -1256,10 +1296,23 @@ void RenderDXR::record_command_lists()
     tonemap_cmd_list->SetComputeRootSignature(tonemap_root_sig.get());
     tonemap_cmd_list->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
 
+    tonemap_cmd_list->EndQuery(
+        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_TONEMAP_BEGIN);
+
     glm::uvec2 dispatch_dim = render_target.dims();
     glm::uvec2 workgroup_dim(16, 16);
     dispatch_dim = (dispatch_dim + workgroup_dim - glm::uvec2(1)) / workgroup_dim;
     tonemap_cmd_list->Dispatch(dispatch_dim.x, dispatch_dim.y, 1);
+
+    tonemap_cmd_list->EndQuery(
+        timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, TIMING_QUERY_FRAME_END);
+
+    tonemap_cmd_list->ResolveQueryData(timing_query_heap.Get(),
+                                       D3D12_QUERY_TYPE_TIMESTAMP,
+                                       0,
+                                       TIMING_QUERY_COUNT,
+                                       query_resolve_buffer.get(),
+                                       0);
 
     CHECK_ERR(tonemap_cmd_list->Close());
 

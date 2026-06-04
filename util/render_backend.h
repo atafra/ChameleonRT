@@ -6,6 +6,9 @@
 
 struct RenderStats {
     float render_time = 0;
+    float frame_time = 0;
+    float denoise_time = 0;
+    float tonemap_time = 0;
     float rays_per_second = 0;
 };
 

@@ -247,6 +247,9 @@ void run_app(const std::vector<std::string> &args,
 
     size_t frame_id = 0;
     float render_time = 0.f;
+    float frame_time = 0.f;
+    float denoise_time = 0.f;
+    float tonemap_time = 0.f;
     float rays_per_second = 0.f;
     glm::vec2 prev_mouse(-2.f);
     bool done = false;
@@ -347,9 +350,15 @@ void run_app(const std::vector<std::string> &args,
 
         if (frame_id == 1) {
             render_time = stats.render_time;
+            frame_time = stats.frame_time;
+            denoise_time = stats.denoise_time;
+            tonemap_time = stats.tonemap_time;
             rays_per_second = stats.rays_per_second;
         } else {
             render_time += stats.render_time;
+            frame_time += stats.frame_time;
+            denoise_time += stats.denoise_time;
+            tonemap_time += stats.tonemap_time;
             rays_per_second += stats.rays_per_second;
         }
 
@@ -359,18 +368,27 @@ void run_app(const std::vector<std::string> &args,
         ImGui::NewFrame();
 
         ImGui::Begin("Render Info");
+        ImGui::Text("Total Application Time: %.3f ms/frame (%.1f FPS)",
+                    1000.0f / ImGui::GetIO().Framerate,
+                    ImGui::GetIO().Framerate);
+        ImGui::Text("GPU Frame Time: %.3f ms/frame (%.1f FPS)",
+                    frame_time / frame_id,
+                    1000.f / (frame_time / frame_id));
         ImGui::Text("Render Time: %.3f ms/frame (%.1f FPS)",
                     render_time / frame_id,
                     1000.f / (render_time / frame_id));
+        if (denoise_time > 0.f) {
+            ImGui::Text("Denoise Time: %.3f ms/frame", denoise_time / frame_id);
+        }
+        if (tonemap_time > 0.f) {
+            ImGui::Text("Tonemap Time: %.3f ms/frame", tonemap_time / frame_id);
+        }
 
         if (stats.rays_per_second > 0) {
             const std::string rays_per_sec = pretty_print_count(rays_per_second / frame_id);
             ImGui::Text("Rays per-second: %sRay/s", rays_per_sec.c_str());
         }
 
-        ImGui::Text("Total Application Time: %.3f ms/frame (%.1f FPS)",
-                    1000.0f / ImGui::GetIO().Framerate,
-                    ImGui::GetIO().Framerate);
         ImGui::Text("RT Backend: %s", rt_backend.c_str());
         ImGui::Text("CPU: %s", cpu_brand.c_str());
         ImGui::Text("GPU: %s", gpu_brand.c_str());
