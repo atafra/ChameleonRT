@@ -410,6 +410,13 @@ void run_app(const std::vector<std::string> &args,
         if (avg_tonemap_time > 0.f) {
             ImGui::Text("Tonemap Time: %.3f ms/frame", avg_tonemap_time);
         }
+        if (stats.passes_overlap) {
+            // In async denoiser modes the render/denoise/tonemap passes run
+            // concurrently on the device, so their times overlap and should not be
+            // summed. GPU Frame Time is the authoritative end-to-end cost.
+            ImGui::TextDisabled(
+                "(passes overlap on device; see GPU Frame Time for total cost)");
+        }
 
         if (stats.rays_per_second > 0) {
             const std::string rays_per_sec = pretty_print_count(avg_rays_per_second);

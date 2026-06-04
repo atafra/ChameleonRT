@@ -10,6 +10,10 @@ struct RenderStats {
     float denoise_time = 0;
     float tonemap_time = 0;
     float rays_per_second = 0;
+    // When true, the render/denoise/tonemap passes run concurrently on the device
+    // (e.g. async OIDN interop), so their individual times overlap and must not be
+    // summed as disjoint intervals. frame_time remains the authoritative total.
+    bool passes_overlap = false;
 };
 
 struct RenderBackend {

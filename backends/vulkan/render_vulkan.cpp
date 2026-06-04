@@ -1294,6 +1294,14 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
                                                       timestamp_freq,
                                                       TIMING_QUERY_DENOISE_BEGIN,
                                                       TIMING_QUERY_TONEMAP_BEGIN);
+
+            // In the async interop modes the denoiser runs on a separate SYCL
+            // context that shares the device with the ray-tracing and tonemap
+            // passes. Their GPU timestamp spans overlap, so the per-pass times
+            // cannot be summed; flag this so consumers treat frame_time as the
+            // authoritative end-to-end cost.
+            stats.passes_overlap = oidn_interop_mode == OIDNInteropMode::TimelineSemaphore ||
+                                   oidn_interop_mode == OIDNInteropMode::BinarySemaphore;
         }
     #endif
     #ifdef REPORT_RAY_STATS
@@ -1597,8 +1605,12 @@ void RenderVulkan::record_command_buffers()
         vkCmdResetQueryPool(
             render_cmd_buf[slot], timing_query_pool, query_base, TIMING_QUERY_COUNT);
 
+        // Begin markers are written at TOP_OF_PIPE and end markers at BOTTOM_OF_PIPE
+        // so each measured span covers only its own work. Using ALL_COMMANDS here
+        // would make the timestamp wait on every prior queue submission (including
+        // the async denoiser), inflating the reported times.
         vkCmdWriteTimestamp(render_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_FRAME_BEGIN);
 
@@ -1618,7 +1630,7 @@ void RenderVulkan::record_command_buffers()
         callable_table.deviceAddress = 0;
 
         vkCmdWriteTimestamp(render_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_RAYTRACING_BEGIN);
         vkrt::CmdTraceRaysKHR(render_cmd_buf[slot],
@@ -1630,7 +1642,7 @@ void RenderVulkan::record_command_buffers()
                               render_target->dims().y,
                               1);
         vkCmdWriteTimestamp(render_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_RAYTRACING_END);
 
@@ -1651,7 +1663,7 @@ void RenderVulkan::record_command_buffers()
                              0, nullptr);
 
         vkCmdWriteTimestamp(render_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_DENOISE_BEGIN);
 
@@ -1673,7 +1685,7 @@ void RenderVulkan::record_command_buffers()
                                 nullptr);
 
         vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_TONEMAP_BEGIN);
 
@@ -1687,7 +1699,7 @@ void RenderVulkan::record_command_buffers()
                       1);
 
         vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             timing_query_pool,
                             query_base + TIMING_QUERY_FRAME_END);
 
