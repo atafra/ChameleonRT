@@ -35,6 +35,10 @@ const std::string USAGE =
 #endif
     "\t--scene-report <path>  Write scene statistics to <path>.json and continue\n"
     "\t--benchmark-frames <n> Render <n> frames then exit (for automated benchmarking)\n"
+    "\t--profiling <base>     Write benchmark CSV/JSON to <base>.csv/.json (implies a\n"
+    "\t                       bounded benchmark run)\n"
+    "\t--profiling-fps <n>    Accepted for RPTR compatibility; influences the default\n"
+    "\t                       benchmark frame budget when --benchmark-frames is unset\n"
     "\n";
 
 int win_width = 1280;
@@ -148,6 +152,7 @@ void run_app(const std::vector<std::string> &args,
     std::string scene_report_path;
     std::string profiling_output_base;
     size_t benchmark_frames = 0;
+    size_t profiling_fps = 0;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "-eye") {
             eye.x = std::stof(args[++i]);
@@ -179,6 +184,8 @@ void run_app(const std::vector<std::string> &args,
             scene_report_path = args[++i];
         } else if (args[i] == "--profiling") {
             profiling_output_base = args[++i];
+        } else if (args[i] == "--profiling-fps" || args[i] == "--profiling-frames") {
+            profiling_fps = std::stoul(args[++i]);
         } else if (args[i] == "--benchmark-frames") {
             benchmark_frames = std::stoul(args[++i]);
         } else if (args[i][0] != '-') {
@@ -297,9 +304,26 @@ void run_app(const std::vector<std::string> &args,
     float rays_per_second = 0.f;
     glm::vec2 prev_mouse(-2.f);
     bool done = false;
+    // A profiling run is a bounded, non-interactive benchmark. It is requested
+    // either explicitly via --benchmark-frames or implicitly via --profiling (in
+    // which case a default frame budget is used, optionally scaled by
+    // --profiling-fps to mirror RPTR's capture command line).
+    const bool profiling_active = !profiling_output_base.empty();
+    if (profiling_active && benchmark_frames == 0) {
+        const size_t default_profiling_frames = 200;
+        benchmark_frames =
+            profiling_fps > 1 ? profiling_fps * default_profiling_frames
+                              : default_profiling_frames;
+    }
     // When a frame budget is set the run is a non-interactive benchmark: camera
     // input is frozen for determinism and the loop exits after the budget.
     const bool benchmark_active = benchmark_frames > 0;
+    // CSV/JSON recorder. Only created when --profiling is requested; otherwise the
+    // pointer stays null and the per-frame record() call is skipped.
+    std::unique_ptr<BenchmarkRecorder> benchmark_recorder;
+    if (profiling_active) {
+        benchmark_recorder.reset(new BenchmarkRecorder(profiling_output_base));
+    }
     bool camera_changed = true;
     bool save_image = false;
     bool resizing = false;
@@ -460,6 +484,21 @@ void run_app(const std::vector<std::string> &args,
         const float avg_denoise_time = denoise_time / stats_sample_count;
         const float avg_tonemap_time = tonemap_time / stats_sample_count;
         const float avg_rays_per_second = rays_per_second / stats_sample_count;
+
+        if (benchmark_recorder) {
+            BenchmarkFrameStats frame_stats;
+            frame_stats.render_time_ms = stats.render_time;
+            // frame_time is the authoritative per-frame total, mapping to RPTR's
+            // app_time_ms column.
+            frame_stats.app_time_ms = stats.frame_time;
+            frame_stats.denoise_time_ms = stats.denoise_time;
+            frame_stats.tonemap_time_ms = stats.tonemap_time;
+            frame_stats.rays_per_second = stats.rays_per_second;
+            // frame_id resets to 0 on camera movement; in a frozen benchmark run
+            // it is the progressive accumulation count.
+            frame_stats.frames_accumulated = frame_id;
+            benchmark_recorder->record(frame_stats);
+        }
 
         display->new_frame();
 
@@ -652,5 +691,21 @@ void run_app(const std::vector<std::string> &args,
         if (!resizing)
             display->display(renderer.get());
         resizing = false;
+    }
+
+    if (benchmark_recorder) {
+        BenchmarkEnvironment env;
+        env.cpu_brand = cpu_brand;
+        env.gpu_brand = gpu_brand;
+        env.display_frontend = display_frontend;
+        env.rt_backend = rt_backend;
+        env.cmdline = args;
+        env.render_width = win_width;
+        env.render_height = win_height;
+        env.display_width = win_width;
+        env.display_height = win_height;
+        benchmark_recorder->finish(env);
+        std::cout << "Benchmark data written to " << profiling_output_base << ".csv and "
+                  << profiling_output_base << ".json\n";
     }
 }

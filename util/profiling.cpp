@@ -1,6 +1,7 @@
 #include "profiling.h"
 #include <cstdio>
 #include <fstream>
+#include <ostream>
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 
@@ -40,4 +41,98 @@ bool write_scene_report(const std::string &path_no_ext, const SceneReport &repor
     writer.EndObject();
 
     return write_text(path_no_ext + ".json", buffer.GetString(), buffer.GetSize());
+}
+
+BenchmarkRecorder::BenchmarkRecorder(const std::string &output_base) : output_base(output_base)
+{
+    csv.reset(new std::ofstream(output_base + ".csv", std::ios::out | std::ios::trunc));
+    if (!csv || !*csv) {
+        std::fprintf(stderr,
+                     "profiling: failed to open '%s.csv' for writing; benchmark "
+                     "recording disabled\n",
+                     output_base.c_str());
+        csv.reset();
+        return;
+    }
+
+    // Standard RPTR columns followed by ChameleonRT's extended per-pass metrics.
+    // The names must match the report_config "perf_metric" values the analysis
+    // tooling plots, with "frames_total" used as the x-axis.
+    *csv << "frames_total"
+         << ",frames_accumulated"
+         << ",render_time_ms"
+         << ",app_time_ms"
+         << ",denoise_time_ms"
+         << ",tonemap_time_ms"
+         << ",rays_per_second" << '\n';
+}
+
+BenchmarkRecorder::~BenchmarkRecorder() = default;
+
+bool BenchmarkRecorder::active() const
+{
+    return csv && static_cast<bool>(*csv);
+}
+
+void BenchmarkRecorder::record(const BenchmarkFrameStats &frame)
+{
+    if (!active()) {
+        return;
+    }
+
+    *csv << frames_total << ',' << frame.frames_accumulated << ',' << frame.render_time_ms
+         << ',' << frame.app_time_ms << ',' << frame.denoise_time_ms << ','
+         << frame.tonemap_time_ms << ',' << frame.rays_per_second << '\n';
+    ++frames_total;
+}
+
+void BenchmarkRecorder::finish(const BenchmarkEnvironment &env)
+{
+    if (csv) {
+        csv->flush();
+        csv.reset();
+    }
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+
+    writer.StartObject();
+    writer.Key("system");
+    writer.StartObject();
+    writer.Key("cpu");
+    writer.String(env.cpu_brand.c_str());
+    writer.Key("gpu");
+    writer.String(env.gpu_brand.c_str());
+    writer.Key("display");
+    writer.String(env.display_frontend.c_str());
+    writer.EndObject();
+
+    writer.Key("app");
+    writer.StartObject();
+    writer.Key("backend");
+    writer.String(env.rt_backend.c_str());
+    writer.EndObject();
+
+    writer.Key("launch");
+    writer.StartObject();
+    writer.Key("display_res");
+    writer.StartArray();
+    writer.Int(env.display_width);
+    writer.Int(env.display_height);
+    writer.EndArray();
+    writer.Key("render_res");
+    writer.StartArray();
+    writer.Int(env.render_width);
+    writer.Int(env.render_height);
+    writer.EndArray();
+    writer.Key("cmdline");
+    writer.StartArray();
+    for (const std::string &arg : env.cmdline) {
+        writer.String(arg.c_str());
+    }
+    writer.EndArray();
+    writer.EndObject();
+    writer.EndObject();
+
+    write_text(output_base + ".json", buffer.GetString(), buffer.GetSize());
 }
