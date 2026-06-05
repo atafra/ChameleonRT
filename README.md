@@ -38,9 +38,36 @@ Keys while the application window is in focus:
 -up <x> <y> <z>        Set the camera up vector
 -fov <fovy>            Specify the camera field of view (in degrees)
 -camera <n>            If the scene contains multiple cameras, specify which
-                       should be used. Defaults to the first camera
+					   should be used. Defaults to the first camera
 -img <x> <y>           Specify the window dimensions. Defaults to 1280x720
+--scene-report <path>  Write scene statistics to <path>.json and continue
+--benchmark-frames <n> Render <n> frames then exit (for automated benchmarking)
+--profiling <base>     Write benchmark CSV/JSON to <base>.csv/.json (implies a
+					   bounded benchmark run)
+--profiling-fps <n>    Accepted for RPTR compatibility; influences the default
+					   benchmark frame budget when --benchmark-frames is unset
 ```
+
+## Profiling & Benchmarking
+
+ChameleonRT can emit benchmark data in a format compatible with the RPTR
+analysis tooling, so runs can be captured and turned into HTML reports.
+
+- `--scene-report <base>` writes `<base>.json` with scene statistics (triangle
+  counts, mesh/instance counts) and continues running.
+- `--benchmark-frames <n>` renders exactly `n` frames with camera input frozen,
+  then exits cleanly — useful for deterministic, non-interactive runs.
+- `--profiling <base>` runs a bounded benchmark and writes per-frame timings to
+  `<base>.csv` (columns
+  `frames_total,frames_accumulated,render_time_ms,app_time_ms,denoise_time_ms,tonemap_time_ms,rays_per_second`)
+  plus a `<base>.json` summary describing the system, backend, and launch
+  configuration. `--profiling-fps <n>` is accepted for RPTR command-line
+  compatibility.
+
+The [`scripts/`](scripts/README.md) directory contains ready-to-use Python
+automation that drives these options to capture benchmarks and generate an HTML
+report with per-metric plots. See [`scripts/README.md`](scripts/README.md) for
+the full workflow and configuration details.
 
 ## Ray Tracing Backends  
 
