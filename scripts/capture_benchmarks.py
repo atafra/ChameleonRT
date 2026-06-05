@@ -66,13 +66,13 @@ for i in range(len(benchmark_variants)):
         benchmark_config.get("shared_benchmark_cmd_prefix", "")
         + benchmark_variants[i].get("benchmark_cmd", "")
         + benchmark_config.get("shared_benchmark_cmd_postfix", "")
-        + " --profiling benchmark_script --profiling-fps 1"
+        + " -profiling benchmark_script -profiling-fps 1"
     )
 
     # The scene report is written once into the benchmark root so analyze can find
     # scene_info.json next to the variant directories.
     scene_info_file = benchmark_root_dir / Path("scene_info")
-    crt_cmd_line += f' --scene-report "{str(scene_info_file)}"'
+    crt_cmd_line += f' -scene-report "{str(scene_info_file)}"'
 
     subprocess.check_call(str(crt_executable_path) + crt_cmd_line)
 

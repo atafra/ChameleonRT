@@ -2,7 +2,7 @@
 
 Python automation that drives `chameleonrt.exe` to capture benchmark data and
 turn it into an HTML report. The scripts consume the benchmark artifacts
-ChameleonRT emits via the `--profiling` option.
+ChameleonRT emits via the `-profiling` option.
 
 ## Files
 
@@ -15,14 +15,14 @@ ChameleonRT emits via the `--profiling` option.
 
 ## Generated artifacts
 
-ChameleonRT's `--profiling <base>` option writes:
+ChameleonRT's `-profiling <base>` option writes:
 
 * `<base>.csv` with the per-frame columns
   `frames_total,frames_accumulated,render_time_ms,app_time_ms,denoise_time_ms,tonemap_time_ms,rays_per_second`.
 * `<base>.json` with `system` (cpu/gpu/display), `app` (backend) and `launch`
   (display/render resolution and command line) blocks.
 
-`--scene-report <base>` writes `<base>.json` with the scene statistics under an
+`-scene-report <base>` writes `<base>.json` with the scene statistics under an
 `info` object.
 
 ## Requirements
@@ -69,8 +69,8 @@ ChameleonRT's `--profiling <base>` option writes:
 * `benchmark_configs` — one entry per variant; `benchmark_cmd` adds
   variant-specific options and `desc` is shown in the report.
 
-The capture script always appends `--profiling benchmark_script --profiling-fps 1`
-and `--scene-report <dir>/scene_info`.
+The capture script always appends `-profiling benchmark_script -profiling-fps 1`
+and `-scene-report <dir>/scene_info`.
 
 ### `report_config.json`
 

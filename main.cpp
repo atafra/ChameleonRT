@@ -33,12 +33,12 @@ const std::string USAGE =
 #ifdef ENABLE_OIDN
     "\t-oidn-interop <mode>  Specify the OIDN interop mode\n"
 #endif
-    "\t--scene-report <path>  Write scene statistics to <path>.json and continue\n"
-    "\t--benchmark-frames <n> Render <n> frames then exit (for automated benchmarking)\n"
-    "\t--profiling <base>     Write benchmark CSV/JSON to <base>.csv/.json (implies a\n"
+    "\t-scene-report <path>   Write scene statistics to <path>.json and continue\n"
+    "\t-benchmark-frames <n>  Render <n> frames then exit (for automated benchmarking)\n"
+    "\t-profiling <base>      Write benchmark CSV/JSON to <base>.csv/.json (implies a\n"
     "\t                       bounded benchmark run)\n"
-    "\t--profiling-fps <n>    Scales the default benchmark frame budget when\n"
-    "\t                       --benchmark-frames is unset\n"
+    "\t-profiling-fps <n>     Scales the default benchmark frame budget when\n"
+    "\t                       -benchmark-frames is unset\n"
     "\n";
 
 int win_width = 1280;
@@ -180,13 +180,13 @@ void run_app(const std::vector<std::string> &args,
             i += 2;
         } else if (args[i] == "-oidn-interop") {
             oidn_interop_mode_arg = args[++i];
-        } else if (args[i] == "--scene-report") {
+        } else if (args[i] == "-scene-report") {
             scene_report_path = args[++i];
-        } else if (args[i] == "--profiling") {
+        } else if (args[i] == "-profiling") {
             profiling_output_base = args[++i];
-        } else if (args[i] == "--profiling-fps" || args[i] == "--profiling-frames") {
+        } else if (args[i] == "-profiling-fps") {
             profiling_fps = std::stoul(args[++i]);
-        } else if (args[i] == "--benchmark-frames") {
+        } else if (args[i] == "-benchmark-frames") {
             benchmark_frames = std::stoul(args[++i]);
         } else if (args[i][0] != '-') {
             scene_file = args[i];
@@ -305,9 +305,9 @@ void run_app(const std::vector<std::string> &args,
     glm::vec2 prev_mouse(-2.f);
     bool done = false;
     // A profiling run is a bounded, non-interactive benchmark. It is requested
-    // either explicitly via --benchmark-frames or implicitly via --profiling (in
+    // either explicitly via -benchmark-frames or implicitly via -profiling (in
     // which case a default frame budget is used, optionally scaled by
-    // --profiling-fps).
+    // -profiling-fps).
     const bool profiling_active = !profiling_output_base.empty();
     if (profiling_active && benchmark_frames == 0) {
         const size_t default_profiling_frames = 200;
@@ -318,7 +318,7 @@ void run_app(const std::vector<std::string> &args,
     // When a frame budget is set the run is a non-interactive benchmark: camera
     // input is frozen for determinism and the loop exits after the budget.
     const bool benchmark_active = benchmark_frames > 0;
-    // CSV/JSON recorder. Only created when --profiling is requested; otherwise the
+    // CSV/JSON recorder. Only created when -profiling is requested; otherwise the
     // pointer stays null and the per-frame record() call is skipped.
     std::unique_ptr<BenchmarkRecorder> benchmark_recorder;
     if (profiling_active) {

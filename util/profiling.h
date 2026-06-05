@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-// Static scene statistics emitted for --scene-report. The schema mirrors what
+// Static scene statistics emitted for -scene-report. The schema mirrors what
 // the benchmark analysis tooling (analyze_benchmarks.py) consumes: the values
 // are nested under a top-level "info" object.
 struct SceneReport {
