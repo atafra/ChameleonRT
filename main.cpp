@@ -34,6 +34,7 @@ const std::string USAGE =
     "\t-oidn-interop <mode>  Specify the OIDN interop mode\n"
 #endif
     "\t--scene-report <path>  Write scene statistics to <path>.json and continue\n"
+    "\t--benchmark-frames <n> Render <n> frames then exit (for automated benchmarking)\n"
     "\n";
 
 int win_width = 1280;
@@ -145,6 +146,8 @@ void run_app(const std::vector<std::string> &args,
     std::string validation_img_prefix;
     std::string oidn_interop_mode_arg;
     std::string scene_report_path;
+    std::string profiling_output_base;
+    size_t benchmark_frames = 0;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "-eye") {
             eye.x = std::stof(args[++i]);
@@ -174,6 +177,10 @@ void run_app(const std::vector<std::string> &args,
             oidn_interop_mode_arg = args[++i];
         } else if (args[i] == "--scene-report") {
             scene_report_path = args[++i];
+        } else if (args[i] == "--profiling") {
+            profiling_output_base = args[++i];
+        } else if (args[i] == "--benchmark-frames") {
+            benchmark_frames = std::stoul(args[++i]);
         } else if (args[i][0] != '-') {
             scene_file = args[i];
             canonicalize_path(scene_file);
@@ -290,6 +297,9 @@ void run_app(const std::vector<std::string> &args,
     float rays_per_second = 0.f;
     glm::vec2 prev_mouse(-2.f);
     bool done = false;
+    // When a frame budget is set the run is a non-interactive benchmark: camera
+    // input is frozen for determinism and the loop exits after the budget.
+    const bool benchmark_active = benchmark_frames > 0;
     bool camera_changed = true;
     bool save_image = false;
     bool resizing = false;
@@ -301,6 +311,10 @@ void run_app(const std::vector<std::string> &args,
     const bool ray_stats_supported = renderer->supports_ray_stats();
     if (!ray_stats_supported) {
         show_ray_stats = false;
+    }
+    if (benchmark_active) {
+        std::cout << "Benchmark mode: rendering " << benchmark_frames
+                  << " frames then exiting\n";
     }
     while (!done) {
         SDL_Event event;
@@ -328,7 +342,7 @@ void run_app(const std::vector<std::string> &args,
                 event.window.windowID == SDL_GetWindowID(window)) {
                 done = true;
             }
-            if (!io.WantCaptureMouse) {
+            if (!io.WantCaptureMouse && !benchmark_active) {
                 if (event.type == SDL_MOUSEMOTION) {
                     const glm::vec2 cur_mouse =
                         transform_mouse(glm::vec2(event.motion.x, event.motion.y));
@@ -384,6 +398,10 @@ void run_app(const std::vector<std::string> &args,
 
         ++frame_id;
         camera_changed = false;
+
+        if (benchmark_active && frame_id >= benchmark_frames) {
+            done = true;
+        }
 
         if (save_image) {
             save_image = false;
