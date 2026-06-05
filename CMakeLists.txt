@@ -22,6 +22,9 @@ find_package(Threads REQUIRED)
 find_package(SDL2 CONFIG REQUIRED)
 # Include glm as an external project
 include(cmake/glm.cmake)
+# Include RapidJSON as an external project (header-only, used for benchmark and
+# scene reports consumed by the analysis scripts)
+include(cmake/rapidjson.cmake)
 include(cmake/package.cmake)
 
 include(CMakeDependentOption)

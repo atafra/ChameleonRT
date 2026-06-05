@@ -10,6 +10,7 @@ add_library(util
     gltf_types.cpp
     flatten_gltf.cpp
     file_mapping.cpp
+    profiling.cpp
     render_plugin.cpp)
 
 set_target_properties(util PROPERTIES
@@ -22,6 +23,10 @@ target_include_directories(util PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/parallel_hashmap>)
 
 target_link_libraries(util PUBLIC imgui glm)
+
+# RapidJSON is a private implementation detail of the profiling reports; it is
+# not exposed through any util public header.
+target_link_libraries(util PRIVATE rapidjson)
 
 if (NOT TARGET SDL2::SDL2)
     # Assume SDL2 is in the default library path and create

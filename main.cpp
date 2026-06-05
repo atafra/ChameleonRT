@@ -16,6 +16,7 @@
 #include "util/display/display.h"
 #include "util/display/gldisplay.h"
 #include "util/display/imgui_impl_sdl.h"
+#include "util/profiling.h"
 #include "util/render_plugin.h"
 
 const std::string USAGE =
@@ -32,6 +33,7 @@ const std::string USAGE =
 #ifdef ENABLE_OIDN
     "\t-oidn-interop <mode>  Specify the OIDN interop mode\n"
 #endif
+    "\t--scene-report <path>  Write scene statistics to <path>.json and continue\n"
     "\n";
 
 int win_width = 1280;
@@ -142,6 +144,7 @@ void run_app(const std::vector<std::string> &args,
     size_t camera_id = 0;
     std::string validation_img_prefix;
     std::string oidn_interop_mode_arg;
+    std::string scene_report_path;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "-eye") {
             eye.x = std::stof(args[++i]);
@@ -169,6 +172,8 @@ void run_app(const std::vector<std::string> &args,
             i += 2;
         } else if (args[i] == "-oidn-interop") {
             oidn_interop_mode_arg = args[++i];
+        } else if (args[i] == "--scene-report") {
+            scene_report_path = args[++i];
         } else if (args[i][0] != '-') {
             scene_file = args[i];
             canonicalize_path(scene_file);
@@ -239,6 +244,18 @@ void run_app(const std::vector<std::string> &args,
 
         scene_info = ss.str();
         std::cout << scene_info << "\n";
+
+        if (!scene_report_path.empty()) {
+            SceneReport report;
+            report.unique_tris = scene.unique_tris();
+            report.total_tris = scene.total_tris();
+            report.num_param_meshes = scene.parameterized_meshes.size();
+            report.num_instances = scene.instances.size();
+            report.num_lod_groups = 0;  // ChameleonRT has no LOD concept
+            if (write_scene_report(scene_report_path, report)) {
+                std::cout << "Scene report written to " << scene_report_path << ".json\n";
+            }
+        }
 
         renderer->set_scene(scene);
 
