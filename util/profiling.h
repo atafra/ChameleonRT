@@ -49,14 +49,13 @@ struct BenchmarkFrameStats {
     float denoise_time_ms = 0;
     float tonemap_time_ms = 0;
     float rays_per_second = 0;
-    // Progressive accumulation count, reset whenever the camera moves. Matches
-    // RPTR's "frames_accumulated" column.
+    // Progressive accumulation count, reset whenever the camera moves.
     size_t frames_accumulated = 0;
 };
 
 // Streams progressive per-frame benchmark data to "<base>.csv" and writes the
-// "<base>.json" summary on finish(). The output mirrors RPTR's BenchmarkInfo so
-// the existing analyze_benchmarks.py tooling can consume ChameleonRT runs.
+// "<base>.json" summary on finish(). The output is consumed by the
+// analyze_benchmarks.py tooling to produce benchmark reports.
 class BenchmarkRecorder {
 public:
     // Opens "<output_base>.csv" and writes the column header. On I/O failure the

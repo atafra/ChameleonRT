@@ -1,9 +1,8 @@
 # ChameleonRT Benchmarking Scripts
 
-Local, ChameleonRT-specific copies of the RPTR benchmark automation scripts. The
-upstream RPTR originals (in the separate `rptr` tree) are intentionally left
-untouched; these copies are adapted to drive `chameleonrt.exe` and to consume the
-benchmark artifacts ChameleonRT emits via the `--profiling` option.
+Python automation that drives `chameleonrt.exe` to capture benchmark data and
+turn it into an HTML report. The scripts consume the benchmark artifacts
+ChameleonRT emits via the `--profiling` option.
 
 ## Files
 

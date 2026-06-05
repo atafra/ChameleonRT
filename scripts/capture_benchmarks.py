@@ -1,12 +1,10 @@
-# Local ChameleonRT copy of the RPTR benchmark capture script.
+# ChameleonRT benchmark capture script.
 #
-# This is adapted from rptr/scripts/capture_benchmarks.py to drive ChameleonRT
-# instead of RPTR. The original RPTR script is left untouched; only this local
-# copy is modified. Differences from the original:
+# Runs chameleonrt.exe for each configured benchmark variant and collects the
+# benchmark artifacts it produces. Notable behaviors:
 #   * Uses "crt_working_dir" / "crt_executable_rel_path" config keys.
 #   * Builds a ChameleonRT command line: <exe> <backend> <scene> [options].
-#   * Drops the EXR -> JPEG frame conversion (ChameleonRT writes PNG frames; the
-#     optional frame dump is handled separately) so this script has no heavy
+#   * Writes PNG frames (no EXR -> JPEG conversion), so this script has no heavy
 #     image dependencies.
 #
 # Usage:

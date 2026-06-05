@@ -37,8 +37,8 @@ const std::string USAGE =
     "\t--benchmark-frames <n> Render <n> frames then exit (for automated benchmarking)\n"
     "\t--profiling <base>     Write benchmark CSV/JSON to <base>.csv/.json (implies a\n"
     "\t                       bounded benchmark run)\n"
-    "\t--profiling-fps <n>    Accepted for RPTR compatibility; influences the default\n"
-    "\t                       benchmark frame budget when --benchmark-frames is unset\n"
+    "\t--profiling-fps <n>    Scales the default benchmark frame budget when\n"
+    "\t                       --benchmark-frames is unset\n"
     "\n";
 
 int win_width = 1280;
@@ -307,7 +307,7 @@ void run_app(const std::vector<std::string> &args,
     // A profiling run is a bounded, non-interactive benchmark. It is requested
     // either explicitly via --benchmark-frames or implicitly via --profiling (in
     // which case a default frame budget is used, optionally scaled by
-    // --profiling-fps to mirror RPTR's capture command line).
+    // --profiling-fps).
     const bool profiling_active = !profiling_output_base.empty();
     if (profiling_active && benchmark_frames == 0) {
         const size_t default_profiling_frames = 200;
@@ -488,7 +488,7 @@ void run_app(const std::vector<std::string> &args,
         if (benchmark_recorder) {
             BenchmarkFrameStats frame_stats;
             frame_stats.render_time_ms = stats.render_time;
-            // frame_time is the authoritative per-frame total, mapping to RPTR's
+            // frame_time is the authoritative per-frame total, recorded as the
             // app_time_ms column.
             frame_stats.app_time_ms = stats.frame_time;
             frame_stats.denoise_time_ms = stats.denoise_time;

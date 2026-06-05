@@ -44,14 +44,14 @@ Keys while the application window is in focus:
 --benchmark-frames <n> Render <n> frames then exit (for automated benchmarking)
 --profiling <base>     Write benchmark CSV/JSON to <base>.csv/.json (implies a
 					   bounded benchmark run)
---profiling-fps <n>    Accepted for RPTR compatibility; influences the default
-					   benchmark frame budget when --benchmark-frames is unset
+--profiling-fps <n>    Scales the default benchmark frame budget when
+					   --benchmark-frames is unset
 ```
 
 ## Profiling & Benchmarking
 
-ChameleonRT can emit benchmark data in a format compatible with the RPTR
-analysis tooling, so runs can be captured and turned into HTML reports.
+ChameleonRT can emit benchmark data describing per-frame render timings, so runs
+can be captured and turned into HTML reports.
 
 - `--scene-report <base>` writes `<base>.json` with scene statistics (triangle
   counts, mesh/instance counts) and continues running.
@@ -61,8 +61,8 @@ analysis tooling, so runs can be captured and turned into HTML reports.
   `<base>.csv` (columns
   `frames_total,frames_accumulated,render_time_ms,app_time_ms,denoise_time_ms,tonemap_time_ms,rays_per_second`)
   plus a `<base>.json` summary describing the system, backend, and launch
-  configuration. `--profiling-fps <n>` is accepted for RPTR command-line
-  compatibility.
+  configuration. `--profiling-fps <n>` scales the default benchmark frame
+  budget.
 
 The [`scripts/`](scripts/README.md) directory contains ready-to-use Python
 automation that drives these options to capture benchmarks and generate an HTML

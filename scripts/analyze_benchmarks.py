@@ -1,10 +1,8 @@
-# Local ChameleonRT copy of the RPTR benchmark analysis script.
+# ChameleonRT benchmark analysis script.
 #
-# Copied from rptr/scripts/analyze_benchmarks.py. The analysis logic is backend
-# agnostic: it consumes the benchmark.csv / benchmark.json / scene_info.json
-# artifacts produced by capture_benchmarks.py, which ChameleonRT now emits in the
-# same schema. The original RPTR script is left untouched; only this local copy
-# lives in the ChameleonRT tree.
+# Parses the benchmark.csv / benchmark.json / scene_info.json artifacts produced
+# by capture_benchmarks.py and generates an HTML report with per-metric plots.
+# The analysis logic is backend agnostic.
 #
 # Usage:
 #   python analyze_benchmarks.py <REPORT_CONFIG.JSON> <BENCHMARK_DIR_NAME> <REPORT_DIR_NAME>

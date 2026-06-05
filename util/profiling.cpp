@@ -55,7 +55,7 @@ BenchmarkRecorder::BenchmarkRecorder(const std::string &output_base) : output_ba
         return;
     }
 
-    // Standard RPTR columns followed by ChameleonRT's extended per-pass metrics.
+    // Standard columns followed by ChameleonRT's extended per-pass metrics.
     // The names must match the report_config "perf_metric" values the analysis
     // tooling plots, with "frames_total" used as the x-axis.
     *csv << "frames_total"
