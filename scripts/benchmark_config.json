@@ -1,0 +1,13 @@
+{
+    "title": "ChameleonRT Sponza (DXR)",
+    "crt_working_dir": "D:\\Code\\ChameleonrRT_OIDN\\build",
+    "crt_executable_rel_path": "Release\\chameleonrt.exe",
+    "shared_benchmark_cmd_prefix": " dxr D:\\Data\\ChameleonRT\\Sponza\\sponza.obj",
+    "shared_benchmark_cmd_postfix": "",
+    "benchmark_configs": [
+        {
+            "name": "dxr",
+            "desc": "Sponza rendered with the DirectX Ray Tracing backend"
+        }
+    ]
+}

@@ -1,0 +1,28 @@
+{
+    "title": "ChameleonRT Benchmark Report",
+    "description": "Per-frame render timing captured from ChameleonRT.",
+    "ignore_frames": 5,
+    "smoothing_window_size": 9,
+    "generate_plots": [
+        {
+            "plot_type": "standard",
+            "perf_metric": "app_time_ms",
+            "alias": "Total Frame Time"
+        },
+        {
+            "plot_type": "standard",
+            "perf_metric": "render_time_ms",
+            "alias": "Render Time"
+        },
+        {
+            "plot_type": "standard",
+            "perf_metric": "denoise_time_ms",
+            "alias": "Denoise Time"
+        },
+        {
+            "plot_type": "standard",
+            "perf_metric": "tonemap_time_ms",
+            "alias": "Tonemap Time"
+        }
+    ]
+}
