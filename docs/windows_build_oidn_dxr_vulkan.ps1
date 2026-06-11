@@ -1,7 +1,7 @@
 param(
     [string]$BuildDir = "build/vs",
     [string]$Config = "Release",
-    [string]$ScenePath = "",
+    [string]$ScenePath = "Assets/Sponza/sponza.obj",
     [string]$Generator = "Visual Studio 18 2026",
     [string]$Arch = "x64",
     [string[]]$ExtraCMakeArgs = @()
@@ -43,6 +43,6 @@ if ($ScenePath) {
 }
 else {
     Write-Host "No scene path provided. Example run:" -ForegroundColor Yellow
-    Write-Host "  $exe vulkan <path-to-scene.gltf>"
-    Write-Host "  $exe dxr <path-to-scene.gltf>"
+    Write-Host "  $exe vulkan Assets/Sponza/sponza.obj"
+    Write-Host "  $exe dxr Assets/Sponza/sponza.obj"
 }

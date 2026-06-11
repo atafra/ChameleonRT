@@ -46,8 +46,8 @@ In Visual Studio, set startup project to `chameleonrt`, choose `Release|x64`, an
 5. Run from terminal (example):
 
 ```powershell
-build\vs\Release\chameleonrt.exe vulkan <path-to-scene.gltf>
-build\vs\Release\chameleonrt.exe dxr <path-to-scene.gltf>
+build\vs\Release\chameleonrt.exe vulkan Assets/Sponza/sponza.obj
+build\vs\Release\chameleonrt.exe dxr Assets/Sponza/sponza.obj
 ```
 
 Tip: first configure/build may take longer because external dependencies are fetched.
@@ -57,5 +57,5 @@ Tiny helper script (same flow):
 ```powershell
 .\docs\windows_build_oidn_dxr_vulkan.ps1
 # with a scene path:
-.\docs\windows_build_oidn_dxr_vulkan.ps1 -ScenePath "C:/path/to/scene.gltf"
+.\docs\windows_build_oidn_dxr_vulkan.ps1 -ScenePath "C:/path/to/scene.obj"
 ```
