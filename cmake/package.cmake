@@ -77,12 +77,22 @@ macro(crt_add_packaged_dependency TARGET_NAME)
         DESTINATION bin)
 endmacro()
 
+# crt_add_packaged_files(<files>... [DEPENDS <targets>...])
+#
+# Stages the given runtime libraries next to the executable. When the files are
+# produced by other targets (e.g. ExternalProject builds such as oidn_ext or
+# dpcpp_ext), pass those targets via DEPENDS so the copy steps build *after* the
+# libraries exist. Without this the staging projects have no build-order
+# dependency on the producers and a clean build races them, trying to copy files
+# that do not exist yet (the copy then only succeeds on a second build).
 macro(crt_add_packaged_files)
+    cmake_parse_arguments(CRT_PKG "" "" "DEPENDS" ${ARGN})
+
     if (NOT TARGET crt_stage_packaged_files)
         add_custom_target(crt_stage_packaged_files ALL)
     endif()
 
-    foreach(LIBRARY ${ARGV})
+    foreach(LIBRARY ${CRT_PKG_UNPARSED_ARGUMENTS})
         if (NOT LIBRARY)
             continue()
         endif()
@@ -93,6 +103,9 @@ macro(crt_add_packaged_files)
             add_custom_target(${COPY_TARGET_NAME}
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRARY}" "${PROJECT_BINARY_DIR}"
                 VERBATIM)
+            if (CRT_PKG_DEPENDS)
+                add_dependencies(${COPY_TARGET_NAME} ${CRT_PKG_DEPENDS})
+            endif()
         endif()
         add_dependencies(crt_stage_packaged_files ${COPY_TARGET_NAME})
 

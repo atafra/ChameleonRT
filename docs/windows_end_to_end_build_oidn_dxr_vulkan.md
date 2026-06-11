@@ -20,11 +20,7 @@ git checkout gliktor-oidn2-easybuild
 2. Configure with Visual Studio generator and desired backends/features:
 
 ```powershell
-cmake -S . -B build\vs -G "Visual Studio 18 2026" -A x64 `
-    -DENABLE_DXR=ON `
-    -DENABLE_VULKAN=ON `
-    -DENABLE_OIDN=ON `
-    -DOIDN_DEVICE=SYCL
+cmake -S . -B build\vs -G "Visual Studio 18 2026" -A x64 -DENABLE_DXR=ON -DENABLE_VULKAN=ON -DENABLE_OIDN=ON -DOIDN_DEVICE=SYCL
 ```
 
 If Vulkan is not found automatically, append:

@@ -126,6 +126,11 @@ add_dependencies(OpenImageDenoise oidn_ext)
 target_include_directories(OpenImageDenoise INTERFACE "${OIDN_INCLUDE_DIR}")
 target_link_libraries(OpenImageDenoise INTERFACE "${OIDN_LINK_LIBRARY}")
 
-crt_add_packaged_files(${OIDN_RUNTIME_LIBRARIES})
+# These runtime libraries are produced by the source builds, not present on disk
+# at configure time. Stage them only after oidn_ext finishes; since oidn_ext
+# DEPENDS on the toolchain projects (dpcpp_ext/level_zero_ext), the DPC++ runtime
+# DLLs are also guaranteed to exist by then. Without this DEPENDS, the generated
+# copy projects race the external builds and fail on a clean first build.
+crt_add_packaged_files(${OIDN_RUNTIME_LIBRARIES} DEPENDS oidn_ext)
 
 message(STATUS "OIDN: configured self-contained source build (device=${OIDN_DEVICE_RESOLVED})")
