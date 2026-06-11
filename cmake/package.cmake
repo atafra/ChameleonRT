@@ -77,3 +77,28 @@ macro(crt_add_packaged_dependency TARGET_NAME)
         DESTINATION bin)
 endmacro()
 
+macro(crt_add_packaged_files)
+    if (NOT TARGET crt_stage_packaged_files)
+        add_custom_target(crt_stage_packaged_files ALL)
+    endif()
+
+    foreach(LIBRARY ${ARGV})
+        if (NOT LIBRARY)
+            continue()
+        endif()
+
+        string(MD5 COPY_TARGET_HASH "${LIBRARY}")
+        set(COPY_TARGET_NAME "crt_stage_packaged_file_${COPY_TARGET_HASH}")
+        if (NOT TARGET ${COPY_TARGET_NAME})
+            add_custom_target(${COPY_TARGET_NAME}
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRARY}" "${PROJECT_BINARY_DIR}"
+                VERBATIM)
+        endif()
+        add_dependencies(crt_stage_packaged_files ${COPY_TARGET_NAME})
+
+        crt_install_namelink("${LIBRARY}")
+        install(PROGRAMS "${LIBRARY}"
+            DESTINATION bin)
+    endforeach()
+endmacro()
+

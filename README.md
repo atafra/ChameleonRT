@@ -1,7 +1,5 @@
 # ChameleonRT
 
-[![CMake](https://github.com/Twinklebear/ChameleonRT/actions/workflows/cmake.yml/badge.svg)](https://github.com/Twinklebear/ChameleonRT/actions/workflows/cmake.yml)
-
 An example path tracer that runs on multiple ray tracing backends (Embree/DXR/OptiX/Vulkan/Metal/OSPRay).
 Uses [tinyobjloader](https://github.com/syoyo/tinyobjloader) to load OBJ files,
 [tinygltf](https://github.com/syoyo/tinygltf) to load glTF files and, optionally,
@@ -10,7 +8,7 @@ The San Miguel,
 Sponza and Rungholt models shown below are from Morgan McGuire's [Computer Graphics Data Archive](https://casual-effects.com/data/).
 
 Binaries built for each platform with support for all rendering backends available on that platform
-can be downloaded from the [Releases](https://github.com/Twinklebear/ChameleonRT/releases) or the latest [Actions](https://github.com/Twinklebear/ChameleonRT/actions) artifacts.
+can be downloaded from the [Releases](https://github.com/atafra/ChameleonRT/releases) or the latest [Actions](https://github.com/atafra/ChameleonRT/actions) artifacts.
 On Linux set the `LD_LIBRARY_PATH` to include the directory where you extract the
 application, on macOS do the same for `DYLD_LIBRARY_PATH`. On macOS you may need to do some
 tweaking/security allowances to get the application to run. Only x86_64 binaries are provided for macOS at the moment.
@@ -56,7 +54,7 @@ can be captured and turned into HTML reports.
 - `-scene-report <base>` writes `<base>.json` with scene statistics (triangle
   counts, mesh/instance counts) and continues running.
 - `-benchmark-frames <n>` renders exactly `n` frames with camera input frozen,
-  then exits cleanly — useful for deterministic, non-interactive runs.
+  then exits cleanly ï¿½ useful for deterministic, non-interactive runs.
 - `-profiling <base>` runs a bounded benchmark and writes per-frame timings to
   `<base>.csv` (columns
   `frames_total,frames_accumulated,render_time_ms,app_time_ms,denoise_time_ms,tonemap_time_ms,rays_per_second`)
@@ -82,9 +80,14 @@ arguments will print help information.
 
 All five ray tracing backends use [SDL2](https://www.libsdl.org/index.php) for window management
 and [GLM](https://github.com/g-truc/glm) for math.
-If CMake doesn't find your SDL2 install you can point it to the root
-of your SDL2 directory by passing `-DSDL2_DIR=<path>`. GLM will be automatically
-downloaded by CMake during the build process.
+On Windows, if SDL2 is not already discoverable, CMake will auto-download the
+pinned SDL2 development package (`2.32.10`) and wire it automatically.
+If you want to use your own SDL2 package instead, pass either
+`-DSDL2_DIR=<path-to-sdl2-cmake-dir>` or
+`-DSDL2_PREBUILT_DIR=<path-to-sdl2-package-root>`.
+On Linux/macOS, install SDL2 normally (package manager or local build) and set
+`SDL2_DIR` if needed. GLM will be automatically downloaded by CMake during the
+build process.
 
 To track statistics about the number of rays traced per-second
 run CMake with `-DREPORT_RAY_STATS=ON`. Tracking these statistics can
@@ -96,6 +99,14 @@ can be reexported from Blender with the "Material Groups" option enabled.
 To build with PBRT file support set the CMake option `CHAMELEONRT_PBRT_SUPPORT=ON` and pass
 `-DpbrtParser_DIR=<path>` with `<path>` pointing to the CMake export files for
 your build of [Ingo Wald's pbrt-parser](https://github.com/ingowald/pbrt-parser).
+
+### Windows End-to-End Example (Visual Studio, OIDN SYCL + Vulkan + DXR)
+
+For a full clone-to-run walkthrough (Visual Studio generator, OIDN SYCL, Vulkan, and DXR), see:
+
+- [docs/windows_end_to_end_build_oidn_dxr_vulkan.md](docs/windows_end_to_end_build_oidn_dxr_vulkan.md)
+
+The guide includes both direct CMake commands and the optional helper script.
 
 ### Embree
 
@@ -171,6 +182,38 @@ cmake .. -DENABLE_METAL=ON
 
 You can then pass `metal` to use the Metal backend.
 
+### OIDN Denoiser
+
+ChameleonRT can now build Open Image Denoise (OIDN) from source on demand,
+including the SYCL toolchain dependencies needed by the Vulkan/DXR interop path.
+
+Enable OIDN with:
+
+```text
+cmake .. -DENABLE_OIDN=ON
+```
+
+By default, OIDN is built with `OIDN_DEVICE=SYCL` (or resolved to `METAL` on
+Apple unless you explicitly choose `CPU`). You can select exactly one device:
+
+```text
+-DOIDN_DEVICE=SYCL|CUDA|HIP|METAL|CPU
+```
+
+Notes:
+- `CUDA` requires a local CUDA Toolkit install.
+- `HIP` requires a local ROCm/HIP install.
+- `SYCL` pulls Intel DPC++ and Level Zero automatically during the build.
+
+If you already have an OIDN install and want to skip download/build, set:
+
+```text
+-DOIDN_PREBUILT_DIR=<path-to-oidn-install>
+```
+
+That directory must contain `include/OpenImageDenoise/oidn.hpp` and OIDN
+libraries under `lib/` (and runtime libraries under `bin/` on Windows).
+
 ### OSPRay
 
 Dependencies: [OSPRay 2.0](http://www.ospray.org/), [TBB](https://www.threadingbuildingblocks.org/).
@@ -197,7 +240,7 @@ If you find ChameleonRT useful in your work, please cite it as:
 @misc{chameleonrt,
 	author = {Will Usher},
 	year = {2019},
-	howpublished = {\url{https://github.com/Twinklebear/ChameleonRT}},
+	howpublished = {\url{https://github.com/atafra/ChameleonRT}},
 	title = {{ChameleonRT}}
 } 
 ```

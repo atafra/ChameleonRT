@@ -19,7 +19,6 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_LIST_DIR}/cmake")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 
 find_package(Threads REQUIRED)
-find_package(SDL2 CONFIG REQUIRED)
 # Include glm as an external project
 include(cmake/glm.cmake)
 # Include RapidJSON as an external project (header-only, used for benchmark and
@@ -28,6 +27,20 @@ include(cmake/rapidjson.cmake)
 include(cmake/package.cmake)
 
 include(CMakeDependentOption)
+
+include(cmake/sdl2.cmake)
+
+# OIDN denoiser: can be built from source on demand (see cmake/oidn.cmake)
+option(ENABLE_OIDN "Build with Intel Open Image Denoise support." OFF)
+set(OIDN_DEVICE "SYCL" CACHE STRING
+    "OIDN device backend to build (exactly one): SYCL, CUDA, HIP, METAL, CPU")
+set_property(CACHE OIDN_DEVICE PROPERTY STRINGS SYCL CUDA HIP METAL CPU)
+set(OIDN_PREBUILT_DIR "" CACHE PATH
+    "Path to an existing OIDN install; if set, skip downloading/building OIDN")
+
+if (ENABLE_OIDN)
+    include(cmake/oidn.cmake)
+endif()
 
 add_subdirectory(imgui)
 add_subdirectory(util)
