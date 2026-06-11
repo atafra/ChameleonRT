@@ -94,6 +94,10 @@ ExternalProject_Add(oidn_ext
         ${_oidn_compiler_args}
     BUILD_ALWAYS OFF)
 
+if (CRT_DEPENDENCY_FOLDER)
+    set_target_properties(oidn_ext PROPERTIES FOLDER "${CRT_DEPENDENCY_FOLDER}")
+endif()
+
 if (WIN32)
     set(OIDN_LINK_LIBRARY "${OIDN_INSTALL_DIR}/lib/OpenImageDenoise${CMAKE_IMPORT_LIBRARY_SUFFIX}")
     set(_oidn_runtime_dir "${OIDN_INSTALL_DIR}/bin")

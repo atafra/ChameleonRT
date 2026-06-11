@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.18)
 project(chameleonrt)
 
+# Group generated helper/dependency projects under a "dependencies" solution
+# folder in IDEs that support it (e.g. Visual Studio) so they don't crowd the
+# main solution. USE_FOLDERS must be enabled explicitly here because the
+# cmake_minimum_required version above predates it defaulting to ON.
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set(CRT_DEPENDENCY_FOLDER "dependencies"
+    CACHE INTERNAL "IDE solution folder for generated dependency projects")
+
 if (NOT WIN32)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic")
 endif()

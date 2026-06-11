@@ -19,5 +19,9 @@ add_library(rapidjson INTERFACE)
 
 add_dependencies(rapidjson rapidjson_ext)
 
+if (CRT_DEPENDENCY_FOLDER)
+    set_target_properties(rapidjson_ext PROPERTIES FOLDER "${CRT_DEPENDENCY_FOLDER}")
+endif()
+
 target_include_directories(rapidjson INTERFACE
     ${RAPIDJSON_INCLUDE_DIRS})

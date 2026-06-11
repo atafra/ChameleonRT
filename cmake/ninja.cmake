@@ -32,6 +32,10 @@ ExternalProject_Add(ninja_ext
     INSTALL_COMMAND ""
     BUILD_ALWAYS OFF)
 
+if (CRT_DEPENDENCY_FOLDER)
+    set_target_properties(ninja_ext PROPERTIES FOLDER "${CRT_DEPENDENCY_FOLDER}")
+endif()
+
 set(OIDN_NINJA_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/ninja/src/ninja${CMAKE_EXECUTABLE_SUFFIX}")
 set(OIDN_NINJA_DEP_TARGET ninja_ext CACHE INTERNAL "Optional Ninja dependency target")
 message(STATUS "Ninja not found on PATH; will download ${OIDN_NINJA_VERSION} for OIDN builds")

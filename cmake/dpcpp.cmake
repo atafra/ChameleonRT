@@ -38,6 +38,10 @@ ExternalProject_Add(dpcpp_ext
     INSTALL_COMMAND ""
     BUILD_ALWAYS OFF)
 
+if (CRT_DEPENDENCY_FOLDER)
+    set_target_properties(dpcpp_ext PROPERTIES FOLDER "${CRT_DEPENDENCY_FOLDER}")
+endif()
+
 set(DPCPP_ROOT "${CMAKE_CURRENT_BINARY_DIR}/dpcpp/src" CACHE INTERNAL "Extracted DPC++ root")
 set(DPCPP_BIN_DIR "${DPCPP_ROOT}/bin" CACHE INTERNAL "DPC++ bin directory")
 set(DPCPP_CLANG "${DPCPP_BIN_DIR}/clang${CMAKE_EXECUTABLE_SUFFIX}" CACHE INTERNAL "DPC++ clang executable")

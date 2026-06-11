@@ -7,5 +7,14 @@ cmake-ninja
 compile_commands.json
 .cache/
 .vscode/
+.agents/
+.clinerules/
+.cursor/
 __pycache__/
 *.pyc
+.github/copilot-instructions.md
+/.opencode
+/.windsurf
+AGENTS.md
+skills-lock.json
+imgui.ini

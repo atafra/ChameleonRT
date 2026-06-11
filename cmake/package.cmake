@@ -72,9 +72,10 @@ macro(crt_add_packaged_dependency TARGET_NAME)
     # Resolve symlinks in the library name we're given
     file(REAL_PATH ${LIBRARY} LIBRARY)
 
-    crt_install_namelink(${LIBRARY})
-    install(PROGRAMS ${LIBRARY}
-        DESTINATION bin)
+    # Stage the resolved runtime library next to the executable (and install it)
+    # using the same mechanism as the other packaged files so it is available
+    # when running directly from the build tree.
+    crt_add_packaged_files("${LIBRARY}")
 endmacro()
 
 # crt_add_packaged_files(<files>... [DEPENDS <targets>...])
@@ -90,6 +91,10 @@ macro(crt_add_packaged_files)
 
     if (NOT TARGET crt_stage_packaged_files)
         add_custom_target(crt_stage_packaged_files ALL)
+        if (CRT_DEPENDENCY_FOLDER)
+            set_target_properties(crt_stage_packaged_files PROPERTIES
+                FOLDER "${CRT_DEPENDENCY_FOLDER}")
+        endif()
     endif()
 
     foreach(LIBRARY ${CRT_PKG_UNPARSED_ARGUMENTS})
@@ -97,12 +102,37 @@ macro(crt_add_packaged_files)
             continue()
         endif()
 
-        string(MD5 COPY_TARGET_HASH "${LIBRARY}")
-        set(COPY_TARGET_NAME "crt_stage_packaged_file_${COPY_TARGET_HASH}")
+        # Build a human readable target name from the library's file name so the
+        # generated IDE projects are self-describing (e.g. "stage_OpenImageDenoise_dll")
+        # instead of an opaque "crt_stage_packaged_file_<md5>".
+        get_filename_component(COPY_TARGET_FILE "${LIBRARY}" NAME)
+        string(REGEX REPLACE "[^A-Za-z0-9]" "_" COPY_TARGET_SUFFIX "${COPY_TARGET_FILE}")
+        set(COPY_TARGET_NAME "stage_${COPY_TARGET_SUFFIX}")
+
+        # Guard against two different paths sharing the same file name: keep the
+        # descriptive name unique by appending a short content hash so neither
+        # file is silently dropped.
+        if (TARGET ${COPY_TARGET_NAME} AND NOT "${LIBRARY}" STREQUAL "${CRT_STAGED_PATH_${COPY_TARGET_NAME}}")
+            string(MD5 COPY_TARGET_HASH "${LIBRARY}")
+            string(SUBSTRING "${COPY_TARGET_HASH}" 0 8 COPY_TARGET_HASH)
+            set(COPY_TARGET_NAME "stage_${COPY_TARGET_SUFFIX}_${COPY_TARGET_HASH}")
+        endif()
+
         if (NOT TARGET ${COPY_TARGET_NAME})
+            # Stage next to the executable. For multi-config generators (e.g.
+            # Visual Studio) the executable lives in a per-config subfolder
+            # (Debug/Release/...), so copy to the executable's actual output
+            # directory rather than the raw PROJECT_BINARY_DIR. make_directory
+            # guards against the destination not existing yet on a clean build.
             add_custom_target(${COPY_TARGET_NAME}
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRARY}" "${PROJECT_BINARY_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:chameleonrt>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRARY}" "$<TARGET_FILE_DIR:chameleonrt>"
                 VERBATIM)
+            set(CRT_STAGED_PATH_${COPY_TARGET_NAME} "${LIBRARY}")
+            if (CRT_DEPENDENCY_FOLDER)
+                set_target_properties(${COPY_TARGET_NAME} PROPERTIES
+                    FOLDER "${CRT_DEPENDENCY_FOLDER}")
+            endif()
             if (CRT_PKG_DEPENDS)
                 add_dependencies(${COPY_TARGET_NAME} ${CRT_PKG_DEPENDS})
             endif()

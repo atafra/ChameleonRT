@@ -28,4 +28,8 @@ ExternalProject_Add(level_zero_ext
     INSTALL_COMMAND ""
     BUILD_ALWAYS OFF)
 
+if (CRT_DEPENDENCY_FOLDER)
+    set_target_properties(level_zero_ext PROPERTIES FOLDER "${CRT_DEPENDENCY_FOLDER}")
+endif()
+
 set(LEVEL_ZERO_ROOT "${CMAKE_CURRENT_BINARY_DIR}/level_zero/src" CACHE INTERNAL "Extracted Level Zero root")

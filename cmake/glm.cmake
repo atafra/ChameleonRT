@@ -20,6 +20,10 @@ add_library(glm INTERFACE)
 
 add_dependencies(glm glm_ext)
 
+if (CRT_DEPENDENCY_FOLDER)
+    set_target_properties(glm_ext PROPERTIES FOLDER "${CRT_DEPENDENCY_FOLDER}")
+endif()
+
 target_include_directories(glm INTERFACE
     ${GLM_INCLUDE_DIRS})
 
