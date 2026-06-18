@@ -294,6 +294,8 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                     &accum_buffer_handle));
         auto input_buffer = oidn_device.newBuffer(oidn::ExternalMemoryTypeFlag::OpaqueWin32,
                                                   accum_buffer_handle, nullptr, accum_buffer.size());
+        // OIDN duplicates the imported handle, so we can release our copy now.
+        CloseHandle(accum_buffer_handle);
 
         HANDLE denoise_buffer_handle = nullptr;
         CHECK_ERR(device->CreateSharedHandle(
@@ -304,6 +306,8 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                     &denoise_buffer_handle));
         auto output_buffer = oidn_device.newBuffer(oidn::ExternalMemoryTypeFlag::OpaqueWin32,
                                                    denoise_buffer_handle, nullptr, denoise_buffer.size());
+        // OIDN duplicates the imported handle, so we can release our copy now.
+        CloseHandle(denoise_buffer_handle);
 
         oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
                              0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
@@ -324,13 +328,20 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
 
         oidn_device_async_supported = false;
 
-        // Register D3D fence for OIDN interop
+        // Create a dedicated fence used exclusively for the OIDN<->SYCL
+        // semaphore, kept separate from the CPU<->GPU handshake fence.
+        CHECK_ERR(device->CreateFence(
+            0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&oidn_fence)));
+
+        // Register the dedicated D3D fence for OIDN interop
         HANDLE win32_fence_handle;
         CHECK_ERR(device->CreateSharedHandle(
-            fence.Get(), nullptr, GENERIC_ALL, nullptr, &win32_fence_handle));
+            oidn_fence.Get(), nullptr, GENERIC_ALL, nullptr, &win32_fence_handle));
 
         oidn_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::D3D12Fence, win32_fence_handle, nullptr);
+        // OIDN duplicates the imported handle, so we can release our copy now.
+        CloseHandle(win32_fence_handle);
 
         oidn_device_async_supported = oidn_device.getError() == oidn::Error::None;
         if (oidn_interop_mode == OIDNInteropMode::DeviceAsync && !oidn_device_async_supported) {
@@ -721,30 +732,30 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
             throw(std::logic_error("Device async OIDN interop is not initialized"));
         }
 
-        // signal fence and let OIDN wait to execute asynchronously
-        const uint64_t oidn_fence_value = fence_value;
-        fence_value += 2;
+        // signal the dedicated OIDN fence and let OIDN wait to execute asynchronously
+        const uint64_t wait_val = oidn_fence_value;
+        oidn_fence_value += 2;
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
         {
             std::ostringstream msg;
             msg << "ID3D12Fence interaction begin: command queue Signal for OIDN, value="
-                << oidn_fence_value << ", reserved_next_value=" << fence_value;
+                << wait_val << ", reserved_next_value=" << oidn_fence_value;
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        cmd_queue->Signal(fence.Get(), oidn_fence_value);
+        cmd_queue->Signal(oidn_fence.Get(), wait_val);
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: command queue Signal for OIDN returned");
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
         {
             std::ostringstream msg;
             msg << "denoising begin: oidn_device.waitSemaphoreAsync waiting for fence value "
-                << oidn_fence_value;
+                << wait_val;
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        oidn_device.waitSemaphoreAsync(oidn_semaphore, oidn_fence_value);
+        oidn_device.waitSemaphoreAsync(oidn_semaphore, wait_val);
         DXR_FRAME_DIAGNOSTIC("denoising: oidn_device.waitSemaphoreAsync returned");
 
         DXR_FRAME_DIAGNOSTIC("denoising: oidn_filter.executeAsync begin");
@@ -755,22 +766,22 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
         {
             std::ostringstream msg;
             msg << "ID3D12Fence interaction begin: oidn_device.signalSemaphoreAsync value="
-                << oidn_fence_value + 1;
+                << wait_val + 1;
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        oidn_device.signalSemaphoreAsync(oidn_semaphore, oidn_fence_value + 1);
+        oidn_device.signalSemaphoreAsync(oidn_semaphore, wait_val + 1);
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: oidn_device.signalSemaphoreAsync returned");
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
         {
             std::ostringstream msg;
             msg << "ID3D12Fence interaction begin: command queue Wait for OIDN fence value "
-                << oidn_fence_value + 1;
+                << wait_val + 1;
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        cmd_queue->Wait(fence.Get(), oidn_fence_value + 1);
+        cmd_queue->Wait(oidn_fence.Get(), wait_val + 1);
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: command queue Wait for OIDN returned; denoising end");
 
     } else {
@@ -949,7 +960,10 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 
 void RenderDXR::create_device_objects()
 {
-    device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+    // This fence is used exclusively for CPU<->GPU handshakes; it is never shared
+    // with OIDN (which uses its own dedicated oidn_fence), so it is not created
+    // with D3D12_FENCE_FLAG_SHARED.
+    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
     fence_evt = CreateEvent(nullptr, false, false, nullptr);
 
     // Create the command queue and command allocator
