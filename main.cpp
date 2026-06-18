@@ -514,7 +514,10 @@ void run_app(const std::vector<std::string> &args,
         ImGui::Text("CPU: %s", cpu_brand.c_str());
         ImGui::Text("GPU: %s", gpu_brand.c_str());
         ImGui::Text("Accumulated Frames: %zu", frame_id);
-        ImGui::Text("Display Frontend: %s", display_frontend.c_str());
+        ImGui::Text("Display Frontend: %s (%dx%d)",
+                    display_frontend.c_str(),
+                    win_width,
+                    win_height);
     #ifdef ENABLE_OIDN
         ImGui::Text("Denoiser: Intel(R) Open Image Denoise");
     #endif
