@@ -101,6 +101,11 @@ struct RenderDXR : RenderBackend {
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
     oidn::SemaphoreRef oidn_semaphore;
+    // Dedicated fence used exclusively for OIDN<->SYCL semaphore sharing, kept
+    // separate from the CPU<->GPU handshake fence (fence/fence_value) so the host
+    // and the SYCL context do not contend on a single fence timeline.
+    Microsoft::WRL::ComPtr<ID3D12Fence> oidn_fence;
+    uint64_t oidn_fence_value = 1;
     OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
     bool oidn_interop_mode_initialized = false;
     bool oidn_device_async_supported = true;
