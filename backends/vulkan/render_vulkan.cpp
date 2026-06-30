@@ -418,12 +418,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     oidn_timeline_semaphore = oidn::SemaphoreRef();
     oidn_wait_semaphore = oidn::SemaphoreRef();
     oidn_signal_semaphore = oidn::SemaphoreRef();
-    timeline_render_wait_value = 0;
-    timeline_render_signal_value = 1;
-    timeline_oidn_wait_value = 1;
-    timeline_oidn_signal_value = 2;
-    timeline_tonemap_wait_value = 2;
-    timeline_tonemap_signal_value = 3;
+    oidn_timeline_value = 1;
 
     if (device->timeline_semaphore_supported()) {
         VkSemaphoreCreateInfo semaphoreInfo = {};
@@ -1128,23 +1123,25 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 #ifdef ENABLE_OIDN
     std::array<VkPipelineStageFlags, 1> waitStages = {{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}};
     VkTimelineSemaphoreSubmitInfo timelineInfo = {};
+    uint64_t timeline_render_done_value = 0;
+    uint64_t timeline_denoise_done_value = 0;
 
     if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
         if (timeline_semaphore == VK_NULL_HANDLE) {
             throw std::logic_error("Timeline semaphore OIDN interop is not initialized");
         }
 
-        submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &timeline_semaphore;
-        submit_info.pWaitDstStageMask = waitStages.data();
+        timeline_render_done_value = oidn_timeline_value++;
+        timeline_denoise_done_value = oidn_timeline_value++;
+
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &timeline_semaphore;
 
         timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timelineInfo.waitSemaphoreValueCount = 1;
-        timelineInfo.pWaitSemaphoreValues = &timeline_render_wait_value;
+        timelineInfo.waitSemaphoreValueCount = 0;
+        timelineInfo.pWaitSemaphoreValues = nullptr;
         timelineInfo.signalSemaphoreValueCount = 1;
-        timelineInfo.pSignalSemaphoreValues = &timeline_render_signal_value;
+        timelineInfo.pSignalSemaphoreValues = &timeline_render_done_value;
         submit_info.pNext = &timelineInfo;
     } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
         if (render_ready_semaphore == VK_NULL_HANDLE || oidn_ready_semaphore == VK_NULL_HANDLE) {
@@ -1176,18 +1173,20 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         CHECK_VULKAN(
             vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
 
-        timeline_render_wait_value += 3;
-        timeline_render_signal_value += 3;
-
-        oidn_device.waitSemaphoreAsync(oidn_timeline_semaphore, timeline_oidn_wait_value);
+        oidn_device.waitSemaphoreAsync(oidn_timeline_semaphore, timeline_render_done_value);
         oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_timeline_semaphore, timeline_oidn_signal_value);
+        oidn_device.signalSemaphoreAsync(oidn_timeline_semaphore, timeline_denoise_done_value);
 
-        timeline_oidn_wait_value += 3;
-        timeline_oidn_signal_value += 3;
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = &timeline_semaphore;
+        submit_info.pWaitDstStageMask = waitStages.data();
+        submit_info.signalSemaphoreCount = 0;
+        submit_info.pSignalSemaphores = nullptr;
 
-        timelineInfo.pWaitSemaphoreValues = &timeline_tonemap_wait_value;
-        timelineInfo.pSignalSemaphoreValues = &timeline_tonemap_signal_value;
+        timelineInfo.waitSemaphoreValueCount = 1;
+        timelineInfo.pWaitSemaphoreValues = &timeline_denoise_done_value;
+        timelineInfo.signalSemaphoreValueCount = 0;
+        timelineInfo.pSignalSemaphoreValues = nullptr;
     } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
         CHECK_VULKAN(
             vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
@@ -1217,13 +1216,6 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         CHECK_VULKAN(
             vkQueueSubmit(device->graphics_queue(), 1, &submit_info, tonemap_fence));
     }
-
-    #ifdef ENABLE_OIDN
-    if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
-        timeline_tonemap_wait_value += 3;
-        timeline_tonemap_signal_value += 3;
-    }
-    #endif
 
     // Subsequent submissions in this frame should not inherit the render/tonemap
     // wait & signal semaphores.
@@ -1313,36 +1305,21 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
                                       offset_ms(TIMING_QUERY_RAYTRACING_END)});
         }
     #ifdef ENABLE_OIDN
-        if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
-            stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                                      timestamp_freq,
-                                                      TIMING_QUERY_RAYTRACING_END,
-                                                      TIMING_QUERY_TONEMAP_BEGIN);
+        stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                  timestamp_freq,
+                                                  TIMING_QUERY_RAYTRACING_END,
+                                                  TIMING_QUERY_TONEMAP_BEGIN);
 
-            if (collect_timeline) {
-                stats.timeline.push_back({"Denoise (est.)",
-                                          offset_ms(TIMING_QUERY_RAYTRACING_END),
-                                          offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
-            }
-        } else {
-            stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                                      timestamp_freq,
-                                                      TIMING_QUERY_DENOISE_BEGIN,
-                                                      TIMING_QUERY_TONEMAP_BEGIN);
+        // OIDN executes asynchronously in the semaphore modes, but for a single
+        // frame it is still serialized between ray tracing and tonemap by the
+        // shared accum/denoise resources. Treat the pass timings as serial, as
+        // the DXR backend does.
+        stats.passes_overlap = false;
 
-            // In the async interop modes the denoiser runs on a separate SYCL
-            // context that shares the device with the ray-tracing and tonemap
-            // passes. Their GPU timestamp spans overlap, so the per-pass times
-            // cannot be summed; flag this so consumers treat frame_time as the
-            // authoritative end-to-end cost.
-            stats.passes_overlap = oidn_interop_mode == OIDNInteropMode::TimelineSemaphore ||
-                                   oidn_interop_mode == OIDNInteropMode::BinarySemaphore;
-
-            if (collect_timeline) {
-                stats.timeline.push_back({"Denoise",
-                                          offset_ms(TIMING_QUERY_DENOISE_BEGIN),
-                                          offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
-            }
+        if (collect_timeline) {
+            stats.timeline.push_back({"Denoise (est.)",
+                                      offset_ms(TIMING_QUERY_RAYTRACING_END),
+                                      offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
         }
     #endif
         if (collect_timeline) {

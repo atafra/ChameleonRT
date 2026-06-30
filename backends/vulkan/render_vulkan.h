@@ -44,7 +44,7 @@ struct RenderVulkan : RenderBackend {
     std::shared_ptr<vkrt::Buffer> denoise_buffer;
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
-    OIDNInteropMode oidn_interop_mode = OIDNInteropMode::BinarySemaphore;
+    OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
     bool oidn_interop_mode_initialized = false;
 #endif
 
@@ -101,12 +101,7 @@ struct RenderVulkan : RenderBackend {
     VkSemaphore oidn_ready_semaphore = VK_NULL_HANDLE;
     oidn::SemaphoreRef oidn_wait_semaphore; // wait for render ready
     oidn::SemaphoreRef oidn_signal_semaphore; // signal OIDN ready
-    uint64_t timeline_render_wait_value = 0;
-    uint64_t timeline_render_signal_value = 1;
-    uint64_t timeline_oidn_wait_value = 1;
-    uint64_t timeline_oidn_signal_value = 2;
-    uint64_t timeline_tonemap_wait_value = 2;
-    uint64_t timeline_tonemap_signal_value = 3;
+    uint64_t oidn_timeline_value = 1;
 #endif
 
     VkQueryPool timing_query_pool;
