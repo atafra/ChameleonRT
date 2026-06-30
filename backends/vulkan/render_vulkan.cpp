@@ -1669,6 +1669,36 @@ void RenderVulkan::record_command_buffers()
                             timing_query_pool,
                             query_base + TIMING_QUERY_RAYTRACING_END);
 
+#ifdef ENABLE_OIDN
+        std::array<VkBufferMemoryBarrier, 2> external_release_barriers{};
+        external_release_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_release_barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        external_release_barriers[0].dstAccessMask = 0;
+        external_release_barriers[0].srcQueueFamilyIndex = device->queue_index();
+        external_release_barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_release_barriers[0].buffer = accum_buffer->handle();
+        external_release_barriers[0].offset = 0;
+        external_release_barriers[0].size = VK_WHOLE_SIZE;
+
+        external_release_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_release_barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        external_release_barriers[1].dstAccessMask = 0;
+        external_release_barriers[1].srcQueueFamilyIndex = device->queue_index();
+        external_release_barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_release_barriers[1].buffer = denoise_buffer->handle();
+        external_release_barriers[1].offset = 0;
+        external_release_barriers[1].size = VK_WHOLE_SIZE;
+
+        vkCmdPipelineBarrier(render_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0,
+                             0, nullptr,
+                             external_release_barriers.size(),
+                             external_release_barriers.data(),
+                             0, nullptr);
+#else
         VkBufferMemoryBarrier buf_barrier{};
         buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         buf_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -1684,6 +1714,7 @@ void RenderVulkan::record_command_buffers()
                              0, nullptr,
                              1, &buf_barrier,
                              0, nullptr);
+#endif
 
         vkCmdWriteTimestamp(render_cmd_buf[slot],
                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1706,6 +1737,36 @@ void RenderVulkan::record_command_buffers()
                                 descriptor_sets.data(),
                                 0,
                                 nullptr);
+
+#ifdef ENABLE_OIDN
+        std::array<VkBufferMemoryBarrier, 2> external_acquire_barriers{};
+        external_acquire_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_acquire_barriers[0].srcAccessMask = 0;
+        external_acquire_barriers[0].dstAccessMask = 0;
+        external_acquire_barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_acquire_barriers[0].dstQueueFamilyIndex = device->queue_index();
+        external_acquire_barriers[0].buffer = accum_buffer->handle();
+        external_acquire_barriers[0].offset = 0;
+        external_acquire_barriers[0].size = VK_WHOLE_SIZE;
+
+        external_acquire_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_acquire_barriers[1].srcAccessMask = 0;
+        external_acquire_barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        external_acquire_barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_acquire_barriers[1].dstQueueFamilyIndex = device->queue_index();
+        external_acquire_barriers[1].buffer = denoise_buffer->handle();
+        external_acquire_barriers[1].offset = 0;
+        external_acquire_barriers[1].size = VK_WHOLE_SIZE;
+
+        vkCmdPipelineBarrier(tonemap_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0,
+                             0, nullptr,
+                             external_acquire_barriers.size(),
+                             external_acquire_barriers.data(),
+                             0, nullptr);
+#endif
 
         vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1744,16 +1805,20 @@ void RenderVulkan::record_command_buffers()
         img_barrier.subresourceRange.baseArrayLayer = 0;
         img_barrier.subresourceRange.layerCount = 1;
 
-        buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
-        buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        buf_barrier.buffer = img_readback_buf->handle();
+        VkBufferMemoryBarrier readback_buf_barrier{};
+        readback_buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        readback_buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
+        readback_buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        readback_buf_barrier.buffer = img_readback_buf->handle();
+        readback_buf_barrier.offset = 0;
+        readback_buf_barrier.size = VK_WHOLE_SIZE;
 
         vkCmdPipelineBarrier(readback_cmd_buf[slot],
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0,
                              0, nullptr,
-                             1, &buf_barrier,
+                             1, &readback_buf_barrier,
                              1, &img_barrier);
 
         VkImageSubresourceLayers copy_subresource = {};
@@ -1781,14 +1846,14 @@ void RenderVulkan::record_command_buffers()
                                1,
                                &img_copy);
 
-        buf_barrier.srcAccessMask = buf_barrier.dstAccessMask;
-        buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        readback_buf_barrier.srcAccessMask = readback_buf_barrier.dstAccessMask;
+        readback_buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
         vkCmdPipelineBarrier(readback_cmd_buf[slot],
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0,
                              0, nullptr,
-                             1, &buf_barrier,
+                             1, &readback_buf_barrier,
                              0, 0);
 
 #ifdef REPORT_RAY_STATS

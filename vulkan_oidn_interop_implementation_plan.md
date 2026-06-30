@@ -44,6 +44,13 @@ Observed benchmark result after Phase 1:
 - `host_blocking` and `timeline_semaphore` improved by roughly the same amount.
 - `timeline_semaphore` still does not show a clear performance gain over `host_blocking`.
 
+Observed benchmark result after initial external ownership synchronization work:
+
+- Overall Vulkan frame times increased.
+- `timeline_semaphore` now shows a performance improvement relative to `host_blocking`.
+- This suggests the previous Vulkan implementation may have been measuring an incomplete or incorrect synchronization path that skipped required external memory visibility/ownership work.
+- `binary_semaphore` still performs worse than `timeline_semaphore`, which is unexpected and should be investigated after the external ownership baseline is validated.
+
 Interpretation:
 
 - The Phase 1 cleanup removed some unnecessary synchronization overhead or timing/path complexity that affected both modes.
@@ -54,6 +61,7 @@ Next recommended phase:
 
 - Implement explicit external ownership and memory synchronization for `accum_buffer` and `denoise_buffer`.
 - Keep the change focused on correctness and visibility first, then benchmark whether timeline semaphore begins to separate from host blocking.
+- After Vulkan correctness/performance work is complete, revisit the DXR backend for a possible conservative `denoise_buffer` UAV barrier before tonemap.
 
 ## Implementation Steps
 
@@ -187,6 +195,43 @@ Useful events:
 
 This should make future Vulkan-vs-DXR comparisons easier without affecting release benchmark results.
 
+### 9. Investigate binary semaphore performance after Vulkan correctness work
+
+Status: pending.
+
+`binary_semaphore` currently performs worse than `timeline_semaphore`, which is unexpected if both paths are doing equivalent device-side ordering and memory visibility work.
+
+Potential investigation areas:
+
+- Confirm binary semaphore reuse is safe across in-flight frames.
+- Move binary semaphores to per-slot semaphore pairs if not already done.
+- Check whether OIDN/SYCL treats imported binary semaphores less efficiently than timeline semaphores on the tested driver/runtime.
+- Add diagnostics for binary wait/signal submission order and per-slot semaphore use.
+- Compare binary mode with and without the same external ownership barriers used by timeline mode.
+
+Do this only after the Vulkan external ownership baseline has been validated.
+
+### 10. Revisit DXR external-write visibility after Vulkan work is complete
+
+Status: deferred until the Vulkan backend work is complete.
+
+The DXR backend does not need Vulkan-style queue-family ownership transfers, but it may still have a conservative visibility gap for the OIDN-written `denoise_buffer` before tonemap.
+
+Current DXR behavior:
+
+- Ray tracing writes `accum_buffer`.
+- DXR records a UAV barrier for `accum_buffer`.
+- The command queue signals a shared D3D12 fence.
+- OIDN waits the fence, denoises asynchronously, and signals the fence.
+- The command queue waits the OIDN fence value.
+- Tonemap reads `denoise_buffer`.
+
+Potential follow-up:
+
+- Add a UAV barrier for `denoise_buffer` at the beginning of the DXR tonemap command list under `ENABLE_OIDN`.
+- Benchmark whether this affects DXR frame times or the async-vs-host-blocking delta.
+- Keep this deferred so the Vulkan backend can be stabilized first.
+
 ## Validation Plan
 
 1. Build with `ENABLE_OIDN` enabled and `REPORT_RAY_STATS` disabled.
@@ -202,6 +247,7 @@ This should make future Vulkan-vs-DXR comparisons easier without affecting relea
    - timeline semaphore should reduce host-side synchronization overhead.
    - binary semaphore should remain functional and benchmarkable, even if slower than timeline.
    - Phase 1 finding: host blocking and timeline semaphore both improved, but timeline semaphore did not yet gain relative to host blocking.
+   - External ownership finding: timeline semaphore now improves relative to host blocking, while binary semaphore remains unexpectedly slower than timeline semaphore.
 6. Confirm the default Vulkan mode remains `host_blocking`.
    - Phase 1 status: confirmed in code.
 
