@@ -49,7 +49,8 @@ Observed benchmark result after initial external ownership synchronization work:
 - Overall Vulkan frame times increased.
 - `timeline_semaphore` now shows a performance improvement relative to `host_blocking`.
 - This suggests the previous Vulkan implementation may have been measuring an incomplete or incorrect synchronization path that skipped required external memory visibility/ownership work.
-- `binary_semaphore` still performs worse than `timeline_semaphore`, which is unexpected and should be investigated after the external ownership baseline is validated.
+- With the original tested driver, `binary_semaphore` performed worse than `timeline_semaphore`.
+- With a newer driver, `binary_semaphore` shows the expected performance gains, so the earlier binary semaphore underperformance appears to have been driver/runtime-specific rather than caused by the application synchronization model.
 
 Interpretation:
 
@@ -62,6 +63,7 @@ Next recommended phase:
 - Implement explicit external ownership and memory synchronization for `accum_buffer` and `denoise_buffer`.
 - Keep the change focused on correctness and visibility first, then benchmark whether timeline semaphore begins to separate from host blocking.
 - After Vulkan correctness/performance work is complete, revisit the DXR backend for a possible conservative `denoise_buffer` UAV barrier before tonemap.
+- Keep driver version recorded with future Vulkan OIDN interop benchmark results, since binary semaphore performance has shown driver sensitivity.
 
 ## Implementation Steps
 
@@ -153,6 +155,8 @@ This avoids reporting misleading overlap for the async Vulkan paths.
 
 ### 6. Improve capability checks and fallback behavior
 
+Status: partially complete. OIDN import error checks have been added for Vulkan shared semaphore and buffer imports. Broader Vulkan external semaphore capability probing is still pending.
+
 Replace broad assumptions about external semaphore support with explicit capability checks.
 
 Recommended checks:
@@ -170,6 +174,8 @@ Fallback rules:
 
 ### 7. Close or release exported handles after OIDN import
 
+Status: completed for Vulkan OIDN semaphore and buffer imports.
+
 Match the DXR backend behavior by closing local exported handles after OIDN imports them.
 
 Apply this to:
@@ -182,6 +188,8 @@ On Windows, call `CloseHandle()` after successful import. On Linux, close file d
 
 ### 8. Add optional diagnostics for Vulkan interop mode debugging
 
+Status: completed with compile-time-gated Vulkan frame diagnostics that report CPU duration for Vulkan submit and OIDN/SYCL semaphore calls.
+
 Add diagnostics similar in spirit to `ENABLE_DXR_FRAME_DIAGNOSTICS`, but keep them compile-time gated.
 
 Useful events:
@@ -190,26 +198,27 @@ Useful events:
 - semaphore creation/import success or fallback
 - timeline values used per frame
 - binary semaphore slot used per frame
-- OIDN wait/execute/signal submission sequence
-- Vulkan tonemap wait submission sequence
+- CPU duration for `vkQueueSubmit` of render and tonemap work
+- CPU duration for OIDN `waitSemaphoreAsync`, `executeAsync`, and `signalSemaphoreAsync`
+- CPU duration for host-blocking render fence wait and `oidn_filter.execute()`
 
 This should make future Vulkan-vs-DXR comparisons easier without affecting release benchmark results.
 
 ### 9. Investigate binary semaphore performance after Vulkan correctness work
 
-Status: pending.
+Status: resolved for the current tested environment. Binary semaphore pairs are now per in-flight frame slot. The earlier binary semaphore underperformance was reproduced only with the older driver; with a newer driver, binary semaphore mode shows the expected performance gains.
 
-`binary_semaphore` currently performs worse than `timeline_semaphore`, which is unexpected if both paths are doing equivalent device-side ordering and memory visibility work.
+`binary_semaphore` performance appears to be driver/runtime-sensitive. Keep this in mind when comparing benchmark results across systems or driver versions.
 
 Potential investigation areas:
 
 - Confirm binary semaphore reuse is safe across in-flight frames.
 - Move binary semaphores to per-slot semaphore pairs if not already done.
-- Check whether OIDN/SYCL treats imported binary semaphores less efficiently than timeline semaphores on the tested driver/runtime.
+- Check whether OIDN/SYCL treats imported binary semaphores less efficiently than timeline semaphores on a specific tested driver/runtime.
 - Add diagnostics for binary wait/signal submission order and per-slot semaphore use.
 - Compare binary mode with and without the same external ownership barriers used by timeline mode.
 
-Do this only after the Vulkan external ownership baseline has been validated.
+No additional application-side binary semaphore changes are currently required beyond the per-slot semaphore pairs already implemented, unless a future driver/runtime regresses again.
 
 ### 10. Revisit DXR external-write visibility after Vulkan work is complete
 
@@ -247,7 +256,8 @@ Potential follow-up:
    - timeline semaphore should reduce host-side synchronization overhead.
    - binary semaphore should remain functional and benchmarkable, even if slower than timeline.
    - Phase 1 finding: host blocking and timeline semaphore both improved, but timeline semaphore did not yet gain relative to host blocking.
-   - External ownership finding: timeline semaphore now improves relative to host blocking, while binary semaphore remains unexpectedly slower than timeline semaphore.
+	  - External ownership finding: timeline semaphore now improves relative to host blocking.
+   - Driver finding: binary semaphore performance was poor on the original driver but shows expected gains with a newer driver, indicating driver/runtime sensitivity.
 6. Confirm the default Vulkan mode remains `host_blocking`.
    - Phase 1 status: confirmed in code.
 

@@ -102,6 +102,7 @@ struct RenderVulkan : RenderBackend {
     oidn::SemaphoreRef oidn_wait_semaphore[MAX_FRAMES_IN_FLIGHT]; // wait for render ready
     oidn::SemaphoreRef oidn_signal_semaphore[MAX_FRAMES_IN_FLIGHT]; // signal OIDN ready
     uint64_t oidn_timeline_value = 1;
+    uint32_t frame_diagnostics_remaining = 3;
 #endif
 
     VkQueryPool timing_query_pool;
