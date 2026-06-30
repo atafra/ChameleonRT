@@ -109,11 +109,13 @@ RenderVulkan::~RenderVulkan()
     if (timeline_semaphore != VK_NULL_HANDLE) {
         vkDestroySemaphore(device->logical_device(), timeline_semaphore, nullptr);
     }
-    if (render_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), render_ready_semaphore, nullptr);
-    }
-    if (oidn_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore, nullptr);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (render_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), render_ready_semaphore[i], nullptr);
+        }
+        if (oidn_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore[i], nullptr);
+        }
     }
 #endif
 }
@@ -397,9 +399,13 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     }
 
 #ifdef ENABLE_OIDN
-    if (timeline_semaphore != VK_NULL_HANDLE ||
-        render_ready_semaphore != VK_NULL_HANDLE ||
-        oidn_ready_semaphore != VK_NULL_HANDLE) {
+    bool has_binary_semaphores = false;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        has_binary_semaphores = has_binary_semaphores ||
+                                render_ready_semaphore[i] != VK_NULL_HANDLE ||
+                                oidn_ready_semaphore[i] != VK_NULL_HANDLE;
+    }
+    if (timeline_semaphore != VK_NULL_HANDLE || has_binary_semaphores) {
         CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
     }
 
@@ -407,17 +413,19 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         vkDestroySemaphore(device->logical_device(), timeline_semaphore, nullptr);
         timeline_semaphore = VK_NULL_HANDLE;
     }
-    if (render_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), render_ready_semaphore, nullptr);
-        render_ready_semaphore = VK_NULL_HANDLE;
-    }
-    if (oidn_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore, nullptr);
-        oidn_ready_semaphore = VK_NULL_HANDLE;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (render_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), render_ready_semaphore[i], nullptr);
+            render_ready_semaphore[i] = VK_NULL_HANDLE;
+        }
+        if (oidn_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore[i], nullptr);
+            oidn_ready_semaphore[i] = VK_NULL_HANDLE;
+        }
+        oidn_wait_semaphore[i] = oidn::SemaphoreRef();
+        oidn_signal_semaphore[i] = oidn::SemaphoreRef();
     }
     oidn_timeline_semaphore = oidn::SemaphoreRef();
-    oidn_wait_semaphore = oidn::SemaphoreRef();
-    oidn_signal_semaphore = oidn::SemaphoreRef();
     oidn_timeline_value = 1;
 
     if (device->timeline_semaphore_supported()) {
@@ -494,11 +502,6 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 #endif
         semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
 
-        CHECK_VULKAN(vkCreateSemaphore(
-            device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore));
-        CHECK_VULKAN(vkCreateSemaphore(
-            device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore));
-
         auto register_binary_semaphore = [&](VkSemaphore semaphore) {
 #ifdef _WIN32
             HANDLE win32_semaphore_handle;
@@ -546,8 +549,15 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 #endif
         };
 
-        oidn_wait_semaphore = register_binary_semaphore(render_ready_semaphore);
-        oidn_signal_semaphore = register_binary_semaphore(oidn_ready_semaphore);
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            CHECK_VULKAN(vkCreateSemaphore(
+                device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore[i]));
+            CHECK_VULKAN(vkCreateSemaphore(
+                device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore[i]));
+
+            oidn_wait_semaphore[i] = register_binary_semaphore(render_ready_semaphore[i]);
+            oidn_signal_semaphore[i] = register_binary_semaphore(oidn_ready_semaphore[i]);
+        }
     }
 
     {
@@ -1144,13 +1154,14 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         timelineInfo.pSignalSemaphoreValues = &timeline_render_done_value;
         submit_info.pNext = &timelineInfo;
     } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
-        if (render_ready_semaphore == VK_NULL_HANDLE || oidn_ready_semaphore == VK_NULL_HANDLE) {
+        if (render_ready_semaphore[slot] == VK_NULL_HANDLE ||
+            oidn_ready_semaphore[slot] == VK_NULL_HANDLE) {
             throw std::logic_error("Binary semaphore OIDN interop is not initialized");
         }
 
         submit_info.pWaitDstStageMask = waitStages.data();
         submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &render_ready_semaphore;
+        submit_info.pSignalSemaphores = &render_ready_semaphore[slot];
     }
 
     if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
@@ -1191,12 +1202,12 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         CHECK_VULKAN(
             vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
 
-        oidn_device.waitSemaphoreAsync(oidn_wait_semaphore);
+        oidn_device.waitSemaphoreAsync(oidn_wait_semaphore[slot]);
         oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore);
+        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore[slot]);
 
         submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &oidn_ready_semaphore;
+        submit_info.pWaitSemaphores = &oidn_ready_semaphore[slot];
         submit_info.signalSemaphoreCount = 0;
         submit_info.pSignalSemaphores = nullptr;
     } else {

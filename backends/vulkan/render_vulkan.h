@@ -97,10 +97,10 @@ struct RenderVulkan : RenderBackend {
 #ifdef ENABLE_OIDN
     VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
     oidn::SemaphoreRef oidn_timeline_semaphore;
-    VkSemaphore render_ready_semaphore = VK_NULL_HANDLE;
-    VkSemaphore oidn_ready_semaphore = VK_NULL_HANDLE;
-    oidn::SemaphoreRef oidn_wait_semaphore; // wait for render ready
-    oidn::SemaphoreRef oidn_signal_semaphore; // signal OIDN ready
+    VkSemaphore render_ready_semaphore[MAX_FRAMES_IN_FLIGHT] = {};
+    VkSemaphore oidn_ready_semaphore[MAX_FRAMES_IN_FLIGHT] = {};
+    oidn::SemaphoreRef oidn_wait_semaphore[MAX_FRAMES_IN_FLIGHT]; // wait for render ready
+    oidn::SemaphoreRef oidn_signal_semaphore[MAX_FRAMES_IN_FLIGHT]; // signal OIDN ready
     uint64_t oidn_timeline_value = 1;
 #endif
 
