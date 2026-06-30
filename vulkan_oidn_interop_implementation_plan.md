@@ -6,6 +6,7 @@ Improve the Vulkan OIDN interop implementation while preserving the ability to c
 
 - `host_blocking`
 - `timeline_semaphore`
+- `timeline_semaphore_per_slot`
 - `binary_semaphore`
 
 Keep `host_blocking` as the default mode so benchmark runs remain explicit and comparable. Assume `REPORT_RAY_STATS` is disabled for the relevant performance tests.
@@ -209,6 +210,8 @@ This should make future Vulkan-vs-DXR comparisons easier without affecting relea
 Status: resolved for the current tested environment. Binary semaphore pairs are now per in-flight frame slot. The earlier binary semaphore underperformance was reproduced only with the older driver; with a newer driver, binary semaphore mode shows the expected performance gains.
 
 `binary_semaphore` performance appears to be driver/runtime-sensitive. Keep this in mind when comparing benchmark results across systems or driver versions.
+
+An optional `timeline_semaphore_per_slot` Vulkan mode has been added for driver/runtime investigation. The normal `timeline_semaphore` mode remains the preferred implementation because a single timeline semaphore with monotonically increasing values is the intended Vulkan usage pattern. The per-slot mode exists to isolate possible driver/runtime issues with repeated values on one imported timeline semaphore.
 
 Potential investigation areas:
 

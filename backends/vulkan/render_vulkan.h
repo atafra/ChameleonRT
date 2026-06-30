@@ -26,6 +26,7 @@ struct RenderVulkan : RenderBackend {
     enum class OIDNInteropMode {
         HostBlocking,
         TimelineSemaphore,
+        TimelineSemaphorePerSlot,
         BinarySemaphore };
 
     // Number of frames whose GPU work / timing queries may be in flight at once.
@@ -97,11 +98,14 @@ struct RenderVulkan : RenderBackend {
 #ifdef ENABLE_OIDN
     VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
     oidn::SemaphoreRef oidn_timeline_semaphore;
+    VkSemaphore timeline_semaphore_per_slot[MAX_FRAMES_IN_FLIGHT] = {};
+    oidn::SemaphoreRef oidn_timeline_semaphore_per_slot[MAX_FRAMES_IN_FLIGHT];
     VkSemaphore render_ready_semaphore[MAX_FRAMES_IN_FLIGHT] = {};
     VkSemaphore oidn_ready_semaphore[MAX_FRAMES_IN_FLIGHT] = {};
     oidn::SemaphoreRef oidn_wait_semaphore[MAX_FRAMES_IN_FLIGHT]; // wait for render ready
     oidn::SemaphoreRef oidn_signal_semaphore[MAX_FRAMES_IN_FLIGHT]; // signal OIDN ready
     uint64_t oidn_timeline_value = 1;
+    uint64_t oidn_timeline_value_per_slot[MAX_FRAMES_IN_FLIGHT] = {};
     uint32_t frame_diagnostics_remaining = 3;
 #endif
 
