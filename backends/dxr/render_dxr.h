@@ -77,6 +77,7 @@ struct RenderDXR : RenderBackend {
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     bool frame_diagnostics_active = false;
+    uint32_t frame_diagnostics_remaining = 3;
 #endif
 
     // Query pool to measure GPU frame stage timings. The heap holds one set of
@@ -106,6 +107,7 @@ struct RenderDXR : RenderBackend {
     // and the SYCL context do not contend on a single fence timeline.
     Microsoft::WRL::ComPtr<ID3D12Fence> oidn_fence;
     uint64_t oidn_fence_value = 1;
+    uint64_t oidn_last_signal_value = 0;
     OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
     bool oidn_interop_mode_initialized = false;
     bool oidn_device_async_supported = true;
@@ -176,4 +178,8 @@ private:
     // value, without otherwise advancing the fence. Used to reclaim an in-flight
     // frame slot and to gate reading back its statistics.
     void wait_for_fence_value(uint64_t value);
+
+#ifdef ENABLE_OIDN
+    void wait_for_oidn_fence_value(uint64_t value);
+#endif
 };

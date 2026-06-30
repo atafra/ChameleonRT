@@ -222,7 +222,7 @@ No additional application-side binary semaphore changes are currently required b
 
 ### 10. Revisit DXR external-write visibility after Vulkan work is complete
 
-Status: deferred until the Vulkan backend work is complete.
+Status: implemented as a conservative DXR visibility barrier; pending benchmark evaluation.
 
 The DXR backend does not need Vulkan-style queue-family ownership transfers, but it may still have a conservative visibility gap for the OIDN-written `denoise_buffer` before tonemap.
 
@@ -237,9 +237,9 @@ Current DXR behavior:
 
 Potential follow-up:
 
-- Add a UAV barrier for `denoise_buffer` at the beginning of the DXR tonemap command list under `ENABLE_OIDN`.
+- Add a UAV barrier for `denoise_buffer` at the beginning of the DXR tonemap command list under `ENABLE_OIDN`. Implemented.
 - Benchmark whether this affects DXR frame times or the async-vs-host-blocking delta.
-- Keep this deferred so the Vulkan backend can be stabilized first.
+- Keep this result separate from the Vulkan backend changes when comparing benchmark results.
 
 ## Validation Plan
 
