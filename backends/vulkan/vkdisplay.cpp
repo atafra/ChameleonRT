@@ -240,6 +240,14 @@ std::string VKDisplay::gpu_brand()
     return properties.deviceName;
 }
 
+GpuInfo VKDisplay::gpu_info()
+{
+    VkPhysicalDeviceProperties properties = {};
+    vkGetPhysicalDeviceProperties(device->physical_device(), &properties);
+    const std::string name = properties.deviceName;
+    return make_gpu_info(name, properties.vendorID, properties.deviceID);
+}
+
 std::string VKDisplay::name()
 {
     return "Vulkan";

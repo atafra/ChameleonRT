@@ -26,6 +26,7 @@ struct RenderVulkan : RenderBackend {
     enum class OIDNInteropMode {
         HostBlocking,
         TimelineSemaphore,
+        TimelineSemaphorePerSlot,
         BinarySemaphore };
 
     // Number of frames whose GPU work / timing queries may be in flight at once.
@@ -44,7 +45,7 @@ struct RenderVulkan : RenderBackend {
     std::shared_ptr<vkrt::Buffer> denoise_buffer;
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
-    OIDNInteropMode oidn_interop_mode = OIDNInteropMode::BinarySemaphore;
+    OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
     bool oidn_interop_mode_initialized = false;
 #endif
 
@@ -97,16 +98,15 @@ struct RenderVulkan : RenderBackend {
 #ifdef ENABLE_OIDN
     VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
     oidn::SemaphoreRef oidn_timeline_semaphore;
-    VkSemaphore render_ready_semaphore = VK_NULL_HANDLE;
-    VkSemaphore oidn_ready_semaphore = VK_NULL_HANDLE;
-    oidn::SemaphoreRef oidn_wait_semaphore; // wait for render ready
-    oidn::SemaphoreRef oidn_signal_semaphore; // signal OIDN ready
-    uint64_t timeline_render_wait_value = 0;
-    uint64_t timeline_render_signal_value = 1;
-    uint64_t timeline_oidn_wait_value = 1;
-    uint64_t timeline_oidn_signal_value = 2;
-    uint64_t timeline_tonemap_wait_value = 2;
-    uint64_t timeline_tonemap_signal_value = 3;
+    VkSemaphore timeline_semaphore_per_slot[MAX_FRAMES_IN_FLIGHT] = {};
+    oidn::SemaphoreRef oidn_timeline_semaphore_per_slot[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore render_ready_semaphore[MAX_FRAMES_IN_FLIGHT] = {};
+    VkSemaphore oidn_ready_semaphore[MAX_FRAMES_IN_FLIGHT] = {};
+    oidn::SemaphoreRef oidn_wait_semaphore[MAX_FRAMES_IN_FLIGHT]; // wait for render ready
+    oidn::SemaphoreRef oidn_signal_semaphore[MAX_FRAMES_IN_FLIGHT]; // signal OIDN ready
+    uint64_t oidn_timeline_value = 1;
+    uint64_t oidn_timeline_value_per_slot[MAX_FRAMES_IN_FLIGHT] = {};
+    uint32_t frame_diagnostics_remaining = 3;
 #endif
 
     VkQueryPool timing_query_pool;

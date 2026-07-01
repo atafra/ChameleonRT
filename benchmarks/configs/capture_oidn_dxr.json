@@ -1,0 +1,20 @@
+{
+    "title": "OIDN Sync Modes - DXR (Sponza)",
+    "crt_working_dir": ".",
+    "crt_executable_rel_path": "build/vs/Release/chameleonrt.exe",
+    "benchmark_frames": 500,
+    "shared_benchmark_cmd_prefix": " dxr ./Assets/Sponza/sponza.obj -img 1920 1080",
+    "shared_benchmark_cmd_postfix": "",
+    "benchmark_configs": [
+        {
+            "name": "baseline_host_blocking",
+            "desc": "Baseline: host-side blocking synchronization between the renderer and OIDN.",
+            "benchmark_cmd": " -oidn-interop host_blocking"
+        },
+        {
+            "name": "device_async",
+            "desc": "GPU-side asynchronous denoising via device interop.",
+            "benchmark_cmd": " -oidn-interop device_async"
+        }
+    ]
+}

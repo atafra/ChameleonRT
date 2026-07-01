@@ -77,6 +77,7 @@ struct RenderDXR : RenderBackend {
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     bool frame_diagnostics_active = false;
+    uint32_t frame_diagnostics_remaining = 3;
 #endif
 
     // Query pool to measure GPU frame stage timings. The heap holds one set of
@@ -100,12 +101,14 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer denoise_buffer;
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
-    oidn::SemaphoreRef oidn_semaphore;
-    // Dedicated fence used exclusively for OIDN<->SYCL semaphore sharing, kept
+    oidn::SemaphoreRef oidn_semaphore[MAX_FRAMES_IN_FLIGHT];
+    // Dedicated fences used exclusively for OIDN<->SYCL semaphore sharing, kept
     // separate from the CPU<->GPU handshake fence (fence/fence_value) so the host
-    // and the SYCL context do not contend on a single fence timeline.
-    Microsoft::WRL::ComPtr<ID3D12Fence> oidn_fence;
-    uint64_t oidn_fence_value = 1;
+    // and the SYCL context do not contend on a single fence timeline. Each
+    // in-flight slot has its own fence/semaphore pair so no host-side drain is
+    // needed before submitting the next frame on a different slot.
+    Microsoft::WRL::ComPtr<ID3D12Fence> oidn_fence[MAX_FRAMES_IN_FLIGHT];
+    uint64_t oidn_fence_value[MAX_FRAMES_IN_FLIGHT] = {};
     OIDNInteropMode oidn_interop_mode = OIDNInteropMode::HostBlocking;
     bool oidn_interop_mode_initialized = false;
     bool oidn_device_async_supported = true;
@@ -176,4 +179,5 @@ private:
     // value, without otherwise advancing the fence. Used to reclaim an in-flight
     // frame slot and to gate reading back its statistics.
     void wait_for_fence_value(uint64_t value);
+
 };

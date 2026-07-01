@@ -42,12 +42,21 @@ float elapsed_timestamp_ms(const uint64_t *timestamps,
     return static_cast<float>(static_cast<double>(delta) / timestamp_freq * 1e3);
 }
 
+#ifdef ENABLE_OIDN
+void check_oidn_error(oidn::DeviceRef &device, const char *message)
+{
+    if (device.getError() != oidn::Error::None) {
+        throw std::runtime_error(message);
+    }
+}
+#endif
+
 } // namespace
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
 bool RenderDXR::frame_diagnostics_enabled() const
 {
-    return frame_diagnostics_active && frame_id < 5;
+    return frame_diagnostics_active && frame_diagnostics_remaining > 0;
 }
 
 void RenderDXR::log_frame_diagnostic(const std::string &event) const
@@ -163,6 +172,9 @@ bool RenderDXR::set_oidn_interop_mode(const std::string &mode)
 
     if (oidn_interop_mode != new_mode) {
         oidn_interop_mode = new_mode;
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+        frame_diagnostics_remaining = 3;
+#endif
         std::cout << "OIDN interop mode changed to: "
                   << oidn_interop_mode_name(oidn_interop_mode) << "\n";
     }
@@ -185,6 +197,10 @@ std::vector<std::string> RenderDXR::get_supported_oidn_interop_modes()
 
 void RenderDXR::initialize(const int fb_width, const int fb_height)
 {
+    if (slot_submitted[0] || slot_submitted[1]) {
+        sync_gpu();
+    }
+
 #ifdef ENABLE_OIDN
     // Get the LUID of the adapter
     LUID luid = device->GetAdapterLuid();
@@ -296,6 +312,7 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                                   accum_buffer_handle, nullptr, accum_buffer.size());
         // OIDN duplicates the imported handle, so we can release our copy now.
         CloseHandle(accum_buffer_handle);
+        check_oidn_error(oidn_device, "Failed to import DXR accum buffer into OIDN.");
 
         HANDLE denoise_buffer_handle = nullptr;
         CHECK_ERR(device->CreateSharedHandle(
@@ -308,6 +325,7 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                                    denoise_buffer_handle, nullptr, denoise_buffer.size());
         // OIDN duplicates the imported handle, so we can release our copy now.
         CloseHandle(denoise_buffer_handle);
+        check_oidn_error(oidn_device, "Failed to import DXR denoise buffer into OIDN.");
 
         oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
                              0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
@@ -326,24 +344,28 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
         if (oidn_device.getError() != oidn::Error::None)
             throw std::runtime_error("Failed to commit OIDN filter.");
 
-        oidn_device_async_supported = false;
+        oidn_device_async_supported = true;
 
-        // Create a dedicated fence used exclusively for the OIDN<->SYCL
-        // semaphore, kept separate from the CPU<->GPU handshake fence.
-        CHECK_ERR(device->CreateFence(
-            0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&oidn_fence)));
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            oidn_fence_value[i] = 1;
 
-        // Register the dedicated D3D fence for OIDN interop
-        HANDLE win32_fence_handle;
-        CHECK_ERR(device->CreateSharedHandle(
-            oidn_fence.Get(), nullptr, GENERIC_ALL, nullptr, &win32_fence_handle));
+            // Create a dedicated fence used exclusively for the OIDN<->SYCL
+            // semaphore, kept separate from the CPU<->GPU handshake fence.
+            CHECK_ERR(device->CreateFence(
+                0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&oidn_fence[i])));
 
-        oidn_semaphore = oidn_device.newSemaphore(
-            oidn::ExternalSemaphoreTypeFlag::D3D12Fence, win32_fence_handle, nullptr);
-        // OIDN duplicates the imported handle, so we can release our copy now.
-        CloseHandle(win32_fence_handle);
+            // Register the dedicated D3D fence for OIDN interop
+            HANDLE win32_fence_handle;
+            CHECK_ERR(device->CreateSharedHandle(
+                oidn_fence[i].Get(), nullptr, GENERIC_ALL, nullptr, &win32_fence_handle));
 
-        oidn_device_async_supported = oidn_device.getError() == oidn::Error::None;
+            oidn_semaphore[i] = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::D3D12Fence, win32_fence_handle, nullptr);
+            // OIDN duplicates the imported handle, so we can release our copy now.
+            CloseHandle(win32_fence_handle);
+            check_oidn_error(oidn_device, "Failed to import DXR OIDN fence semaphore.");
+        }
+
         if (oidn_interop_mode == OIDNInteropMode::DeviceAsync && !oidn_device_async_supported) {
             std::cerr << "OIDN interop mode '"
                       << oidn_interop_mode_name(oidn_interop_mode)
@@ -695,7 +717,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     }
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
-    frame_diagnostics_active = frame_id < 5;
+    frame_diagnostics_active = frame_diagnostics_remaining > 0;
     {
         std::ostringstream msg;
         msg << "frame start; camera_changed=" << camera_changed
@@ -732,19 +754,22 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
             throw(std::logic_error("Device async OIDN interop is not initialized"));
         }
 
-        // signal the dedicated OIDN fence and let OIDN wait to execute asynchronously
-        const uint64_t wait_val = oidn_fence_value;
-        oidn_fence_value += 2;
+        // Signal this slot's dedicated OIDN fence and let OIDN wait to execute
+        // asynchronously. The slot fence below guarantees this fence/semaphore
+        // pair is not reused until all work for this slot has completed.
+        const uint64_t wait_val = oidn_fence_value[slot];
+        oidn_fence_value[slot] += 2;
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
         {
             std::ostringstream msg;
             msg << "ID3D12Fence interaction begin: command queue Signal for OIDN, value="
-                << wait_val << ", reserved_next_value=" << oidn_fence_value;
+                << wait_val << ", reserved_next_value=" << oidn_fence_value[slot]
+                << ", slot=" << slot;
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        cmd_queue->Signal(oidn_fence.Get(), wait_val);
+        CHECK_ERR(cmd_queue->Signal(oidn_fence[slot].Get(), wait_val));
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: command queue Signal for OIDN returned");
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
@@ -755,11 +780,13 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        oidn_device.waitSemaphoreAsync(oidn_semaphore, wait_val);
+        oidn_device.waitSemaphoreAsync(oidn_semaphore[slot], wait_val);
+        check_oidn_error(oidn_device, "OIDN failed to enqueue async wait on DXR fence.");
         DXR_FRAME_DIAGNOSTIC("denoising: oidn_device.waitSemaphoreAsync returned");
 
         DXR_FRAME_DIAGNOSTIC("denoising: oidn_filter.executeAsync begin");
         oidn_filter.executeAsync();
+        check_oidn_error(oidn_device, "OIDN failed to enqueue async filter execution.");
         DXR_FRAME_DIAGNOSTIC("denoising: oidn_filter.executeAsync returned");
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
@@ -770,7 +797,8 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        oidn_device.signalSemaphoreAsync(oidn_semaphore, wait_val + 1);
+        oidn_device.signalSemaphoreAsync(oidn_semaphore[slot], wait_val + 1);
+        check_oidn_error(oidn_device, "OIDN failed to enqueue async signal on DXR fence.");
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: oidn_device.signalSemaphoreAsync returned");
 
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
@@ -781,7 +809,7 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
             DXR_FRAME_DIAGNOSTIC(msg.str());
         }
 #endif
-        cmd_queue->Wait(oidn_fence.Get(), wait_val + 1);
+        CHECK_ERR(cmd_queue->Wait(oidn_fence[slot].Get(), wait_val + 1));
         DXR_FRAME_DIAGNOSTIC("ID3D12Fence interaction end: command queue Wait for OIDN returned; denoising end");
 
     } else {
@@ -954,6 +982,11 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
 #endif
 
     ++frame_id;
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+    if (frame_diagnostics_remaining > 0) {
+        --frame_diagnostics_remaining;
+    }
+#endif
     frame_slot = (frame_slot + 1) % MAX_FRAMES_IN_FLIGHT;
     return stats;
 }
@@ -1436,6 +1469,15 @@ void RenderDXR::record_command_lists_for_slot(uint32_t slot)
     tonemap_cmd_list[slot]->SetComputeRootSignature(tonemap_root_sig.get());
     tonemap_cmd_list[slot]->SetComputeRootDescriptorTable(0, raygen_desc_heap.gpu_desc_handle());
 
+#ifdef ENABLE_OIDN
+    // OIDN writes denoise_buffer from an external SYCL context. The fence wait
+    // in render() orders that work before this command list executes; this UAV
+    // barrier makes the subsequent tonemap read conservative with respect to
+    // D3D12 resource visibility.
+    barrier = barrier_uav(denoise_buffer);
+    tonemap_cmd_list[slot]->ResourceBarrier(1, &barrier);
+#endif
+
     tonemap_cmd_list[slot]->EndQuery(timing_query_heap.Get(),
                                      D3D12_QUERY_TYPE_TIMESTAMP,
                                      query_base + TIMING_QUERY_TONEMAP_BEGIN);
@@ -1562,7 +1604,28 @@ void RenderDXR::wait_for_fence_value(uint64_t value)
     }
 #endif
     CHECK_ERR(fence->SetEventOnCompletion(value, fence_evt));
-    WaitForSingleObject(fence_evt, INFINITE);
+    const DWORD wait_result = WaitForSingleObject(fence_evt,
+#ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
+                                                 10000
+#else
+                                                 INFINITE
+#endif
+    );
+    if (wait_result != WAIT_OBJECT_0) {
+        std::ostringstream msg;
+        msg << "Timed out waiting for DXR slot fence value " << value
+            << "; completed slot fence=" << fence->GetCompletedValue();
+#ifdef ENABLE_OIDN
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            if (oidn_fence[i]) {
+                msg << "; completed OIDN fence[" << i << "]="
+                    << oidn_fence[i]->GetCompletedValue()
+                    << "; next OIDN fence value[" << i << "]=" << oidn_fence_value[i];
+            }
+        }
+#endif
+        throw std::runtime_error(msg.str());
+    }
 #ifdef ENABLE_DXR_FRAME_DIAGNOSTICS
     {
         std::ostringstream msg;

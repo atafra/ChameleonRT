@@ -4,11 +4,17 @@
 #include <chrono>
 #include <iostream>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <stdexcept>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "spv_shaders_embedded_spv.h"
 #include "util.h"
 #include <glm/ext.hpp>
+
+//#define ENABLE_VULKAN_FRAME_DIAGNOSTICS
 
 namespace {
 
@@ -31,7 +37,40 @@ float elapsed_timestamp_ms(const uint64_t *timestamps,
     return static_cast<float>(static_cast<double>(delta) / timestamp_freq * 1e3);
 }
 
+#ifdef ENABLE_OIDN
+void check_oidn_error(oidn::DeviceRef &device, const char *message)
+{
+    if (device.getError() != oidn::Error::None) {
+        throw std::runtime_error(message);
+    }
+}
+#endif
+
 } // namespace
+
+#ifdef ENABLE_VULKAN_FRAME_DIAGNOSTICS
+#define VULKAN_FRAME_DIAGNOSTIC(event) \
+    do { \
+        if (frame_diagnostics_remaining > 0) { \
+            std::cout << "[Vulkan frame diagnostic][frame " << frame_id << "] " \
+                      << event << std::endl; \
+        } \
+    } while (false)
+#define VULKAN_FRAME_DIAGNOSTIC_TIMED(label, ...) \
+    do { \
+        const auto diagnostic_begin = std::chrono::high_resolution_clock::now(); \
+        __VA_ARGS__; \
+        const auto diagnostic_end = std::chrono::high_resolution_clock::now(); \
+        if (frame_diagnostics_remaining > 0) { \
+            const float diagnostic_ms = \
+                std::chrono::duration<float, std::milli>(diagnostic_end - diagnostic_begin).count(); \
+            VULKAN_FRAME_DIAGNOSTIC(label << " cpu_ms=" << diagnostic_ms); \
+        } \
+    } while (false)
+#else
+#define VULKAN_FRAME_DIAGNOSTIC(event) do { } while (false)
+#define VULKAN_FRAME_DIAGNOSTIC_TIMED(label, ...) do { __VA_ARGS__; } while (false)
+#endif
 
 RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
     : device(dev), native_display(true)
@@ -109,11 +148,16 @@ RenderVulkan::~RenderVulkan()
     if (timeline_semaphore != VK_NULL_HANDLE) {
         vkDestroySemaphore(device->logical_device(), timeline_semaphore, nullptr);
     }
-    if (render_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), render_ready_semaphore, nullptr);
-    }
-    if (oidn_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore, nullptr);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (timeline_semaphore_per_slot[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), timeline_semaphore_per_slot[i], nullptr);
+        }
+        if (render_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), render_ready_semaphore[i], nullptr);
+        }
+        if (oidn_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore[i], nullptr);
+        }
     }
 #endif
 }
@@ -142,6 +186,8 @@ const char* oidn_interop_mode_name(RenderVulkan::OIDNInteropMode mode)
         return "host_blocking";
     case RenderVulkan::OIDNInteropMode::TimelineSemaphore:
         return "timeline_semaphore";
+    case RenderVulkan::OIDNInteropMode::TimelineSemaphorePerSlot:
+        return "timeline_semaphore_per_slot";
     case RenderVulkan::OIDNInteropMode::BinarySemaphore:
         return "binary_semaphore";
     }
@@ -168,6 +214,13 @@ bool RenderVulkan::set_oidn_interop_mode(const std::string &mode)
             return false;
         }
         new_mode = OIDNInteropMode::TimelineSemaphore;
+    } else if (mode == "timeline_semaphore_per_slot") {
+        if (!device->timeline_semaphore_supported()) {
+            std::cerr << "OIDN interop mode '" << mode
+                      << "' is not supported by this Vulkan device.\n";
+            return false;
+        }
+        new_mode = OIDNInteropMode::TimelineSemaphorePerSlot;
     } else if (mode == "binary_semaphore") {
         if (!device->external_semaphore_supported()) {
             std::cerr << "OIDN interop mode '" << mode
@@ -182,6 +235,7 @@ bool RenderVulkan::set_oidn_interop_mode(const std::string &mode)
 
     if (oidn_interop_mode != new_mode) {
         oidn_interop_mode = new_mode;
+        frame_diagnostics_remaining = 3;
         std::cout << "OIDN interop mode changed to: "
                   << oidn_interop_mode_name(oidn_interop_mode) << "\n";
     }
@@ -199,6 +253,7 @@ std::vector<std::string> RenderVulkan::get_supported_oidn_interop_modes()
     // Check for timeline semaphore support
     if (device->timeline_semaphore_supported()) {
         modes.push_back("timeline_semaphore");
+        modes.push_back("timeline_semaphore_per_slot");
     }
 
     // Check for binary semaphore support
@@ -397,9 +452,18 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     }
 
 #ifdef ENABLE_OIDN
+    bool has_binary_semaphores = false;
+    bool has_per_slot_timeline_semaphores = false;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        has_binary_semaphores = has_binary_semaphores ||
+                                render_ready_semaphore[i] != VK_NULL_HANDLE ||
+                                oidn_ready_semaphore[i] != VK_NULL_HANDLE;
+        has_per_slot_timeline_semaphores = has_per_slot_timeline_semaphores ||
+                                           timeline_semaphore_per_slot[i] != VK_NULL_HANDLE;
+    }
     if (timeline_semaphore != VK_NULL_HANDLE ||
-        render_ready_semaphore != VK_NULL_HANDLE ||
-        oidn_ready_semaphore != VK_NULL_HANDLE) {
+        has_per_slot_timeline_semaphores ||
+        has_binary_semaphores) {
         CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
     }
 
@@ -407,23 +471,26 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         vkDestroySemaphore(device->logical_device(), timeline_semaphore, nullptr);
         timeline_semaphore = VK_NULL_HANDLE;
     }
-    if (render_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), render_ready_semaphore, nullptr);
-        render_ready_semaphore = VK_NULL_HANDLE;
-    }
-    if (oidn_ready_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore, nullptr);
-        oidn_ready_semaphore = VK_NULL_HANDLE;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (timeline_semaphore_per_slot[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), timeline_semaphore_per_slot[i], nullptr);
+            timeline_semaphore_per_slot[i] = VK_NULL_HANDLE;
+        }
+        oidn_timeline_semaphore_per_slot[i] = oidn::SemaphoreRef();
+        oidn_timeline_value_per_slot[i] = 1;
+        if (render_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), render_ready_semaphore[i], nullptr);
+            render_ready_semaphore[i] = VK_NULL_HANDLE;
+        }
+        if (oidn_ready_semaphore[i] != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device->logical_device(), oidn_ready_semaphore[i], nullptr);
+            oidn_ready_semaphore[i] = VK_NULL_HANDLE;
+        }
+        oidn_wait_semaphore[i] = oidn::SemaphoreRef();
+        oidn_signal_semaphore[i] = oidn::SemaphoreRef();
     }
     oidn_timeline_semaphore = oidn::SemaphoreRef();
-    oidn_wait_semaphore = oidn::SemaphoreRef();
-    oidn_signal_semaphore = oidn::SemaphoreRef();
-    timeline_render_wait_value = 0;
-    timeline_render_signal_value = 1;
-    timeline_oidn_wait_value = 1;
-    timeline_oidn_signal_value = 2;
-    timeline_tonemap_wait_value = 2;
-    timeline_tonemap_signal_value = 3;
+    oidn_timeline_value = 1;
 
     if (device->timeline_semaphore_supported()) {
         VkSemaphoreCreateInfo semaphoreInfo = {};
@@ -466,6 +533,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr); // FIXME: AMD seems to require OpaqueWin32 instead
+        CloseHandle(win32_semaphore_handle);
+        check_oidn_error(oidn_device, "Failed to import Vulkan timeline semaphore into OIDN.");
 #else
         int fd_semaphore_handle;
         VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
@@ -484,7 +553,83 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreFD, fd_semaphore_handle);
+        close(fd_semaphore_handle);
+        check_oidn_error(oidn_device, "Failed to import Vulkan timeline semaphore into OIDN.");
 #endif
+    }
+
+    if (device->timeline_semaphore_supported()) {
+        VkSemaphoreCreateInfo semaphoreInfo = {};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkExportSemaphoreCreateInfoKHR exportSemaphoreCreateInfo = {};
+        exportSemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR;
+
+        VkSemaphoreTypeCreateInfo timelineCreateInfo = {};
+        timelineCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        timelineCreateInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        timelineCreateInfo.initialValue = 0;
+        exportSemaphoreCreateInfo.pNext = &timelineCreateInfo;
+#ifdef _WIN32
+        exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+#else
+        exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
+        semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            CHECK_VULKAN(vkCreateSemaphore(device->logical_device(),
+                                           &semaphoreInfo,
+                                           nullptr,
+                                           &timeline_semaphore_per_slot[i]));
+
+#ifdef _WIN32
+            HANDLE win32_semaphore_handle;
+            VkSemaphoreGetWin32HandleInfoKHR semaphoreGetWin32HandleInfoKHR = {};
+            semaphoreGetWin32HandleInfoKHR.sType =
+                VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
+            semaphoreGetWin32HandleInfoKHR.semaphore = timeline_semaphore_per_slot[i];
+            semaphoreGetWin32HandleInfoKHR.handleType =
+                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+            PFN_vkGetSemaphoreWin32HandleKHR fpGetSemaphoreWin32HandleKHR;
+            fpGetSemaphoreWin32HandleKHR = (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(
+                device->logical_device(), "vkGetSemaphoreWin32HandleKHR");
+            if (!fpGetSemaphoreWin32HandleKHR) {
+                throw std::runtime_error("Failed to retrieve vkGetSemaphoreWin32HandleKHR!");
+            }
+            CHECK_VULKAN(fpGetSemaphoreWin32HandleKHR(device->logical_device(),
+                                                      &semaphoreGetWin32HandleInfoKHR,
+                                                      &win32_semaphore_handle));
+
+            oidn_timeline_semaphore_per_slot[i] = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32,
+                win32_semaphore_handle,
+                nullptr);
+            CloseHandle(win32_semaphore_handle);
+#else
+            int fd_semaphore_handle;
+            VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
+            semaphoreGetFdInfoKHR.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+            semaphoreGetFdInfoKHR.semaphore = timeline_semaphore_per_slot[i];
+            semaphoreGetFdInfoKHR.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+            PFN_vkGetSemaphoreFdKHR fpGetSemaphoreFdKHR;
+            fpGetSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(
+                device->logical_device(), "vkGetSemaphoreFdKHR");
+            if (!fpGetSemaphoreFdKHR) {
+                throw std::runtime_error("Failed to retrieve vkGetSemaphoreFdKHR!");
+            }
+            CHECK_VULKAN(fpGetSemaphoreFdKHR(device->logical_device(),
+                                             &semaphoreGetFdInfoKHR,
+                                             &fd_semaphore_handle));
+
+            oidn_timeline_semaphore_per_slot[i] = oidn_device.newSemaphore(
+                oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreFD, fd_semaphore_handle);
+            close(fd_semaphore_handle);
+#endif
+            check_oidn_error(oidn_device,
+                             "Failed to import per-slot Vulkan timeline semaphore into OIDN.");
+        }
     }
 
     if (device->external_semaphore_supported()) {
@@ -498,11 +643,6 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         exportSemaphoreCreateInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
 #endif
         semaphoreInfo.pNext = &exportSemaphoreCreateInfo;
-
-        CHECK_VULKAN(vkCreateSemaphore(
-            device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore));
-        CHECK_VULKAN(vkCreateSemaphore(
-            device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore));
 
         auto register_binary_semaphore = [&](VkSemaphore semaphore) {
 #ifdef _WIN32
@@ -525,10 +665,13 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                                       &semaphoreGetWin32HandleInfoKHR,
                                                       &win32_semaphore_handle));
 
-            return oidn_device.newSemaphore(
+            auto oidn_semaphore = oidn_device.newSemaphore(
                 oidn::ExternalSemaphoreTypeFlag::OpaqueWin32,
                 win32_semaphore_handle,
                 nullptr);
+            CloseHandle(win32_semaphore_handle);
+            check_oidn_error(oidn_device, "Failed to import Vulkan binary semaphore into OIDN.");
+            return oidn_semaphore;
 #else
             int fd_semaphore_handle;
             VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
@@ -546,13 +689,23 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                              &semaphoreGetFdInfoKHR,
                                              &fd_semaphore_handle));
 
-            return oidn_device.newSemaphore(
+            auto oidn_semaphore = oidn_device.newSemaphore(
                 oidn::ExternalSemaphoreTypeFlag::OpaqueFD, fd_semaphore_handle);
+            close(fd_semaphore_handle);
+            check_oidn_error(oidn_device, "Failed to import Vulkan binary semaphore into OIDN.");
+            return oidn_semaphore;
 #endif
         };
 
-        oidn_wait_semaphore = register_binary_semaphore(render_ready_semaphore);
-        oidn_signal_semaphore = register_binary_semaphore(oidn_ready_semaphore);
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            CHECK_VULKAN(vkCreateSemaphore(
+                device->logical_device(), &semaphoreInfo, nullptr, &render_ready_semaphore[i]));
+            CHECK_VULKAN(vkCreateSemaphore(
+                device->logical_device(), &semaphoreInfo, nullptr, &oidn_ready_semaphore[i]));
+
+            oidn_wait_semaphore[i] = register_binary_semaphore(render_ready_semaphore[i]);
+            oidn_signal_semaphore[i] = register_binary_semaphore(oidn_ready_semaphore[i]);
+        }
     }
 
     {
@@ -561,19 +714,37 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         if (oidn_device.getError() != oidn::Error::None)
             throw std::runtime_error("Failed to create OIDN filter.");
 
+#ifdef _WIN32
+        HANDLE accum_buffer_handle = accum_buffer->external_mem_handle(external_mem_type);
         auto input_buffer  = oidn_device.newBuffer(oidn_external_mem_type,
-                                                   accum_buffer->external_mem_handle(external_mem_type),
-                                                #ifdef _WIN32
+                                                   accum_buffer_handle,
                                                    nullptr,
-                                                #endif
                                                    accum_buffer->size());
+        CloseHandle(accum_buffer_handle);
+        check_oidn_error(oidn_device, "Failed to import Vulkan accum buffer into OIDN.");
 
+        HANDLE denoise_buffer_handle = denoise_buffer->external_mem_handle(external_mem_type);
         auto output_buffer = oidn_device.newBuffer(oidn_external_mem_type,
-                                                   denoise_buffer->external_mem_handle(external_mem_type),
-                                                #ifdef _WIN32
+                                                   denoise_buffer_handle,
                                                    nullptr,
-                                                #endif
                                                    denoise_buffer->size());
+        CloseHandle(denoise_buffer_handle);
+        check_oidn_error(oidn_device, "Failed to import Vulkan denoise buffer into OIDN.");
+#else
+        int accum_buffer_fd = accum_buffer->external_mem_handle(external_mem_type);
+        auto input_buffer = oidn_device.newBuffer(oidn_external_mem_type,
+                                                  accum_buffer_fd,
+                                                  accum_buffer->size());
+        close(accum_buffer_fd);
+        check_oidn_error(oidn_device, "Failed to import Vulkan accum buffer into OIDN.");
+
+        int denoise_buffer_fd = denoise_buffer->external_mem_handle(external_mem_type);
+        auto output_buffer = oidn_device.newBuffer(oidn_external_mem_type,
+                                                   denoise_buffer_fd,
+                                                   denoise_buffer->size());
+        close(denoise_buffer_fd);
+        check_oidn_error(oidn_device, "Failed to import Vulkan denoise buffer into OIDN.");
+#endif
 
         oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
                              0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
@@ -1128,76 +1299,135 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 #ifdef ENABLE_OIDN
     std::array<VkPipelineStageFlags, 1> waitStages = {{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}};
     VkTimelineSemaphoreSubmitInfo timelineInfo = {};
+    uint64_t timeline_render_done_value = 0;
+    uint64_t timeline_denoise_done_value = 0;
 
-    if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
-        if (timeline_semaphore == VK_NULL_HANDLE) {
+    VULKAN_FRAME_DIAGNOSTIC("frame start; slot=" << slot
+                             << ", oidn_interop_mode="
+                             << oidn_interop_mode_name(oidn_interop_mode));
+
+    if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore ||
+        oidn_interop_mode == OIDNInteropMode::TimelineSemaphorePerSlot) {
+        VkSemaphore &active_timeline_semaphore =
+            oidn_interop_mode == OIDNInteropMode::TimelineSemaphorePerSlot
+                ? timeline_semaphore_per_slot[slot]
+                : timeline_semaphore;
+        uint64_t &active_timeline_value =
+            oidn_interop_mode == OIDNInteropMode::TimelineSemaphorePerSlot
+                ? oidn_timeline_value_per_slot[slot]
+                : oidn_timeline_value;
+
+        if (active_timeline_semaphore == VK_NULL_HANDLE) {
             throw std::logic_error("Timeline semaphore OIDN interop is not initialized");
         }
 
-        submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &timeline_semaphore;
-        submit_info.pWaitDstStageMask = waitStages.data();
+        timeline_render_done_value = active_timeline_value++;
+        timeline_denoise_done_value = active_timeline_value++;
+
+        VULKAN_FRAME_DIAGNOSTIC("timeline values; render_done="
+                                 << timeline_render_done_value
+                                 << ", denoise_done="
+                                 << timeline_denoise_done_value
+                                 << ", slot=" << slot);
+
         submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &timeline_semaphore;
+        submit_info.pSignalSemaphores = &active_timeline_semaphore;
 
         timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timelineInfo.waitSemaphoreValueCount = 1;
-        timelineInfo.pWaitSemaphoreValues = &timeline_render_wait_value;
+        timelineInfo.waitSemaphoreValueCount = 0;
+        timelineInfo.pWaitSemaphoreValues = nullptr;
         timelineInfo.signalSemaphoreValueCount = 1;
-        timelineInfo.pSignalSemaphoreValues = &timeline_render_signal_value;
+        timelineInfo.pSignalSemaphoreValues = &timeline_render_done_value;
         submit_info.pNext = &timelineInfo;
     } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
-        if (render_ready_semaphore == VK_NULL_HANDLE || oidn_ready_semaphore == VK_NULL_HANDLE) {
+        if (render_ready_semaphore[slot] == VK_NULL_HANDLE ||
+            oidn_ready_semaphore[slot] == VK_NULL_HANDLE) {
             throw std::logic_error("Binary semaphore OIDN interop is not initialized");
         }
 
+        VULKAN_FRAME_DIAGNOSTIC("binary semaphore slot=" << slot);
+
         submit_info.pWaitDstStageMask = waitStages.data();
         submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &render_ready_semaphore;
+        submit_info.pSignalSemaphores = &render_ready_semaphore[slot];
     }
 
     if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
         // Submit the rendering work and block the host so the denoiser can run.
-        CHECK_VULKAN(
-            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence[slot]));
-        CHECK_VULKAN(vkWaitForFences(device->logical_device(),
-                                     1,
-                                     &fence[slot],
-                                     true,
-                                     std::numeric_limits<uint64_t>::max()));
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "render submit host_blocking",
+            CHECK_VULKAN(
+                vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence[slot])));
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "wait render fence host_blocking",
+            CHECK_VULKAN(vkWaitForFences(device->logical_device(),
+                                         1,
+                                         &fence[slot],
+                                         true,
+                                         std::numeric_limits<uint64_t>::max())));
         CHECK_VULKAN(vkResetFences(device->logical_device(), 1, &fence[slot]));
 
         // Denoise the frame. The GPU is idle here and the work runs on a
         // separate OIDN device, so GPU timestamps cannot measure it directly.
         // The denoise cost is instead estimated from the GPU-visible gap
         // between ray tracing and tonemapping during stats readback.
-        oidn_filter.execute();
-    } else if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
-        CHECK_VULKAN(
-            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+        VULKAN_FRAME_DIAGNOSTIC_TIMED("oidn execute host_blocking", oidn_filter.execute());
+    } else if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore ||
+               oidn_interop_mode == OIDNInteropMode::TimelineSemaphorePerSlot) {
+        VkSemaphore &active_timeline_semaphore =
+            oidn_interop_mode == OIDNInteropMode::TimelineSemaphorePerSlot
+                ? timeline_semaphore_per_slot[slot]
+                : timeline_semaphore;
+        oidn::SemaphoreRef &active_oidn_timeline_semaphore =
+            oidn_interop_mode == OIDNInteropMode::TimelineSemaphorePerSlot
+                ? oidn_timeline_semaphore_per_slot[slot]
+                : oidn_timeline_semaphore;
 
-        timeline_render_wait_value += 3;
-        timeline_render_signal_value += 3;
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            oidn_interop_mode_name(oidn_interop_mode) << " render submit",
+            CHECK_VULKAN(
+                vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE)));
 
-        oidn_device.waitSemaphoreAsync(oidn_timeline_semaphore, timeline_oidn_wait_value);
-        oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_timeline_semaphore, timeline_oidn_signal_value);
-
-        timeline_oidn_wait_value += 3;
-        timeline_oidn_signal_value += 3;
-
-        timelineInfo.pWaitSemaphoreValues = &timeline_tonemap_wait_value;
-        timelineInfo.pSignalSemaphoreValues = &timeline_tonemap_signal_value;
-    } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
-        CHECK_VULKAN(
-            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
-
-        oidn_device.waitSemaphoreAsync(oidn_wait_semaphore);
-        oidn_filter.executeAsync();
-        oidn_device.signalSemaphoreAsync(oidn_signal_semaphore);
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            oidn_interop_mode_name(oidn_interop_mode) << " oidn waitSemaphoreAsync",
+            oidn_device.waitSemaphoreAsync(active_oidn_timeline_semaphore,
+                                           timeline_render_done_value));
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            oidn_interop_mode_name(oidn_interop_mode) << " oidn executeAsync",
+            oidn_filter.executeAsync());
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            oidn_interop_mode_name(oidn_interop_mode) << " oidn signalSemaphoreAsync",
+            oidn_device.signalSemaphoreAsync(active_oidn_timeline_semaphore,
+                                             timeline_denoise_done_value));
 
         submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &oidn_ready_semaphore;
+        submit_info.pWaitSemaphores = &active_timeline_semaphore;
+        submit_info.pWaitDstStageMask = waitStages.data();
+        submit_info.signalSemaphoreCount = 0;
+        submit_info.pSignalSemaphores = nullptr;
+
+        timelineInfo.waitSemaphoreValueCount = 1;
+        timelineInfo.pWaitSemaphoreValues = &timeline_denoise_done_value;
+        timelineInfo.signalSemaphoreValueCount = 0;
+        timelineInfo.pSignalSemaphoreValues = nullptr;
+    } else if (oidn_interop_mode == OIDNInteropMode::BinarySemaphore) {
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "render submit binary_semaphore",
+            CHECK_VULKAN(
+                vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE)));
+
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "oidn waitSemaphoreAsync binary_semaphore",
+            oidn_device.waitSemaphoreAsync(oidn_wait_semaphore[slot]));
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "oidn executeAsync binary_semaphore",
+            oidn_filter.executeAsync());
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "oidn signalSemaphoreAsync binary_semaphore",
+            oidn_device.signalSemaphoreAsync(oidn_signal_semaphore[slot]));
+
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = &oidn_ready_semaphore[slot];
         submit_info.signalSemaphoreCount = 0;
         submit_info.pSignalSemaphores = nullptr;
     } else {
@@ -1214,16 +1444,11 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pCommandBuffers = &tonemap_cmd_buf[slot];
     {
         const VkFence tonemap_fence = need_readback ? VK_NULL_HANDLE : fence[slot];
-        CHECK_VULKAN(
-            vkQueueSubmit(device->graphics_queue(), 1, &submit_info, tonemap_fence));
+        VULKAN_FRAME_DIAGNOSTIC_TIMED(
+            "tonemap submit",
+            CHECK_VULKAN(
+                vkQueueSubmit(device->graphics_queue(), 1, &submit_info, tonemap_fence)));
     }
-
-    #ifdef ENABLE_OIDN
-    if (oidn_interop_mode == OIDNInteropMode::TimelineSemaphore) {
-        timeline_tonemap_wait_value += 3;
-        timeline_tonemap_signal_value += 3;
-    }
-    #endif
 
     // Subsequent submissions in this frame should not inherit the render/tonemap
     // wait & signal semaphores.
@@ -1313,36 +1538,21 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
                                       offset_ms(TIMING_QUERY_RAYTRACING_END)});
         }
     #ifdef ENABLE_OIDN
-        if (oidn_interop_mode == OIDNInteropMode::HostBlocking) {
-            stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                                      timestamp_freq,
-                                                      TIMING_QUERY_RAYTRACING_END,
-                                                      TIMING_QUERY_TONEMAP_BEGIN);
+        stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
+                                                  timestamp_freq,
+                                                  TIMING_QUERY_RAYTRACING_END,
+                                                  TIMING_QUERY_TONEMAP_BEGIN);
 
-            if (collect_timeline) {
-                stats.timeline.push_back({"Denoise (est.)",
-                                          offset_ms(TIMING_QUERY_RAYTRACING_END),
-                                          offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
-            }
-        } else {
-            stats.denoise_time = elapsed_timestamp_ms(render_timestamps.data(),
-                                                      timestamp_freq,
-                                                      TIMING_QUERY_DENOISE_BEGIN,
-                                                      TIMING_QUERY_TONEMAP_BEGIN);
+        // OIDN executes asynchronously in the semaphore modes, but for a single
+        // frame it is still serialized between ray tracing and tonemap by the
+        // shared accum/denoise resources. Treat the pass timings as serial, as
+        // the DXR backend does.
+        stats.passes_overlap = false;
 
-            // In the async interop modes the denoiser runs on a separate SYCL
-            // context that shares the device with the ray-tracing and tonemap
-            // passes. Their GPU timestamp spans overlap, so the per-pass times
-            // cannot be summed; flag this so consumers treat frame_time as the
-            // authoritative end-to-end cost.
-            stats.passes_overlap = oidn_interop_mode == OIDNInteropMode::TimelineSemaphore ||
-                                   oidn_interop_mode == OIDNInteropMode::BinarySemaphore;
-
-            if (collect_timeline) {
-                stats.timeline.push_back({"Denoise",
-                                          offset_ms(TIMING_QUERY_DENOISE_BEGIN),
-                                          offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
-            }
+        if (collect_timeline) {
+            stats.timeline.push_back({"Denoise (est.)",
+                                      offset_ms(TIMING_QUERY_RAYTRACING_END),
+                                      offset_ms(TIMING_QUERY_TONEMAP_BEGIN)});
         }
     #endif
         if (collect_timeline) {
@@ -1360,6 +1570,11 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
 
     frame_slot = (frame_slot + 1) % MAX_FRAMES_IN_FLIGHT;
     ++frame_id;
+#ifdef ENABLE_OIDN
+    if (frame_diagnostics_remaining > 0) {
+        --frame_diagnostics_remaining;
+    }
+#endif
     return stats;
 }
 
@@ -1692,6 +1907,36 @@ void RenderVulkan::record_command_buffers()
                             timing_query_pool,
                             query_base + TIMING_QUERY_RAYTRACING_END);
 
+#ifdef ENABLE_OIDN
+        std::array<VkBufferMemoryBarrier, 2> external_release_barriers{};
+        external_release_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_release_barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        external_release_barriers[0].dstAccessMask = 0;
+        external_release_barriers[0].srcQueueFamilyIndex = device->queue_index();
+        external_release_barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_release_barriers[0].buffer = accum_buffer->handle();
+        external_release_barriers[0].offset = 0;
+        external_release_barriers[0].size = VK_WHOLE_SIZE;
+
+        external_release_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_release_barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        external_release_barriers[1].dstAccessMask = 0;
+        external_release_barriers[1].srcQueueFamilyIndex = device->queue_index();
+        external_release_barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_release_barriers[1].buffer = denoise_buffer->handle();
+        external_release_barriers[1].offset = 0;
+        external_release_barriers[1].size = VK_WHOLE_SIZE;
+
+        vkCmdPipelineBarrier(render_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0,
+                             0, nullptr,
+                             external_release_barriers.size(),
+                             external_release_barriers.data(),
+                             0, nullptr);
+#else
         VkBufferMemoryBarrier buf_barrier{};
         buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         buf_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -1707,6 +1952,7 @@ void RenderVulkan::record_command_buffers()
                              0, nullptr,
                              1, &buf_barrier,
                              0, nullptr);
+#endif
 
         vkCmdWriteTimestamp(render_cmd_buf[slot],
                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1729,6 +1975,36 @@ void RenderVulkan::record_command_buffers()
                                 descriptor_sets.data(),
                                 0,
                                 nullptr);
+
+#ifdef ENABLE_OIDN
+        std::array<VkBufferMemoryBarrier, 2> external_acquire_barriers{};
+        external_acquire_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_acquire_barriers[0].srcAccessMask = 0;
+        external_acquire_barriers[0].dstAccessMask = 0;
+        external_acquire_barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_acquire_barriers[0].dstQueueFamilyIndex = device->queue_index();
+        external_acquire_barriers[0].buffer = accum_buffer->handle();
+        external_acquire_barriers[0].offset = 0;
+        external_acquire_barriers[0].size = VK_WHOLE_SIZE;
+
+        external_acquire_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        external_acquire_barriers[1].srcAccessMask = 0;
+        external_acquire_barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        external_acquire_barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        external_acquire_barriers[1].dstQueueFamilyIndex = device->queue_index();
+        external_acquire_barriers[1].buffer = denoise_buffer->handle();
+        external_acquire_barriers[1].offset = 0;
+        external_acquire_barriers[1].size = VK_WHOLE_SIZE;
+
+        vkCmdPipelineBarrier(tonemap_cmd_buf[slot],
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0,
+                             0, nullptr,
+                             external_acquire_barriers.size(),
+                             external_acquire_barriers.data(),
+                             0, nullptr);
+#endif
 
         vkCmdWriteTimestamp(tonemap_cmd_buf[slot],
                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1767,16 +2043,20 @@ void RenderVulkan::record_command_buffers()
         img_barrier.subresourceRange.baseArrayLayer = 0;
         img_barrier.subresourceRange.layerCount = 1;
 
-        buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
-        buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        buf_barrier.buffer = img_readback_buf->handle();
+        VkBufferMemoryBarrier readback_buf_barrier{};
+        readback_buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        readback_buf_barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
+        readback_buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        readback_buf_barrier.buffer = img_readback_buf->handle();
+        readback_buf_barrier.offset = 0;
+        readback_buf_barrier.size = VK_WHOLE_SIZE;
 
         vkCmdPipelineBarrier(readback_cmd_buf[slot],
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0,
                              0, nullptr,
-                             1, &buf_barrier,
+                             1, &readback_buf_barrier,
                              1, &img_barrier);
 
         VkImageSubresourceLayers copy_subresource = {};
@@ -1804,14 +2084,14 @@ void RenderVulkan::record_command_buffers()
                                1,
                                &img_copy);
 
-        buf_barrier.srcAccessMask = buf_barrier.dstAccessMask;
-        buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        readback_buf_barrier.srcAccessMask = readback_buf_barrier.dstAccessMask;
+        readback_buf_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
         vkCmdPipelineBarrier(readback_cmd_buf[slot],
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0,
                              0, nullptr,
-                             1, &buf_barrier,
+                             1, &readback_buf_barrier,
                              0, 0);
 
 #ifdef REPORT_RAY_STATS

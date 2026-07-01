@@ -1,0 +1,29 @@
+{
+    "title": "OIDN Synchronization Modes - Vulkan (Sponza)",
+    "description": "Comparison of OIDN interop/synchronization modes on the Vulkan backend.",
+    "ignore_frames": 120,
+    "smoothing_window_size": 5,
+    "generate_plots": [
+        {
+            "perf_metric": "app_time_ms",
+            "alias": "Total Frame Time (ms)",
+            "plot_type": "standard"
+        },
+        {
+            "perf_metric": "denoise_time_ms",
+            "alias": "Denoise Time (ms)",
+            "plot_type": "standard"
+        },
+        {
+            "perf_metric": "render_time_ms",
+            "alias": "Render Time (ms)",
+            "plot_type": "standard"
+        },
+        {
+            "perf_metric": "app_time_ms",
+            "alias": "Total Frame Time vs host_blocking",
+            "plot_type": "relative",
+            "baseline": "baseline_host_blocking"
+        }
+    ]
+}
