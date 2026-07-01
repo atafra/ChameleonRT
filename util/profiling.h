@@ -57,23 +57,22 @@ struct BenchmarkFrameStats {
     size_t frames_accumulated = 0;
 };
 
-// Streams progressive per-frame benchmark data to "<base>.csv" and writes the
-// "<base>.json" summary on finish(). The output is consumed by the
-// analyze_benchmarks.py tooling to produce benchmark reports.
+// Buffers progressive per-frame benchmark data in memory and writes
+// "<base>.csv" / "<base>.json" on finish(). Keeping per-frame recording in
+// memory avoids file I/O and text formatting during measured frames.
 class BenchmarkRecorder {
 public:
-    // Opens "<output_base>.csv" and writes the column header. On I/O failure the
-    // recorder becomes inactive and record()/finish() are no-ops.
+    // Creates an in-memory recorder. Files are opened only when finish() is called.
     explicit BenchmarkRecorder(const std::string &output_base);
     ~BenchmarkRecorder();
 
     BenchmarkRecorder(const BenchmarkRecorder &) = delete;
     BenchmarkRecorder &operator=(const BenchmarkRecorder &) = delete;
 
-    // True when the CSV stream is open and rows are being written.
+    // True when frame stats are being buffered.
     bool active() const;
 
-    // Append one CSV row for the most recently rendered frame.
+    // Buffer one CSV row for the most recently rendered frame.
     void record(const BenchmarkFrameStats &frame);
 
     // Write the "<base>.json" summary. Called once after the render loop.
@@ -81,8 +80,6 @@ public:
 
 private:
     std::string output_base;
-    // Monotonic frame counter across the whole run; emitted as the "frames_total"
-    // column that the plots use as their x-axis.
-    size_t frames_total = 0;
-    std::unique_ptr<std::ofstream> csv;
+    bool enabled = true;
+    std::vector<BenchmarkFrameStats> frames;
 };

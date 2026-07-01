@@ -344,7 +344,7 @@ void run_app(const std::vector<std::string> &args,
     bool camera_changed = true;
     bool save_image = false;
     bool resizing = false;
-    bool show_timeline = true;
+    bool show_timeline = !profiling_active;
     bool average_timeline = false;
     bool show_ray_stats = true;
     // Whether the active backend can produce ray statistics at all. When it
@@ -360,7 +360,9 @@ void run_app(const std::vector<std::string> &args,
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            ImGui_ImplSDL2_ProcessEvent(&event);
+            if (!profiling_active) {
+                ImGui_ImplSDL2_ProcessEvent(&event);
+            }
             if (event.type == SDL_QUIT) {
                 done = true;
             }
@@ -422,17 +424,19 @@ void run_app(const std::vector<std::string> &args,
         }
 
         const bool need_readback = save_image || !validation_img_prefix.empty();
-        if (renderer->collect_timeline != show_timeline) {
+        const bool collect_timeline = profiling_active ? false : show_timeline;
+        if (renderer->collect_timeline != collect_timeline) {
             std::cout << "Frame timeline collection "
-                      << (show_timeline ? "enabled" : "disabled") << "\n";
+                      << (collect_timeline ? "enabled" : "disabled") << "\n";
         }
-        renderer->collect_timeline = show_timeline;
+        renderer->collect_timeline = collect_timeline;
         if (ray_stats_supported) {
-            if (renderer->collect_ray_stats != show_ray_stats) {
+            const bool collect_ray_stats = profiling_active ? false : show_ray_stats;
+            if (renderer->collect_ray_stats != collect_ray_stats) {
                 std::cout << "Ray stats collection "
-                          << (show_ray_stats ? "enabled" : "disabled") << "\n";
+                          << (collect_ray_stats ? "enabled" : "disabled") << "\n";
             }
-            renderer->collect_ray_stats = show_ray_stats;
+            renderer->collect_ray_stats = collect_ray_stats;
         }
         RenderStats stats = renderer->render(
             camera.eye(), camera.dir(), camera.up(), fov_y, camera_changed, need_readback);
@@ -465,7 +469,7 @@ void run_app(const std::vector<std::string> &args,
                            4 * win_width);
         }
 
-        if (frame_id == 1) {
+        if (!profiling_active && frame_id == 1) {
             stats_history_count = 0;
             stats_history_index = 0;
             render_time = 0.f;
@@ -475,32 +479,39 @@ void run_app(const std::vector<std::string> &args,
             rays_per_second = 0.f;
         }
 
-        if (stats_history_count == stats_window) {
-            const RenderStats &old_stats = stats_history[stats_history_index];
-            render_time -= old_stats.render_time;
-            frame_time -= old_stats.frame_time;
-            denoise_time -= old_stats.denoise_time;
-            tonemap_time -= old_stats.tonemap_time;
-            rays_per_second -= old_stats.rays_per_second;
-        } else {
-            ++stats_history_count;
+        float avg_render_time = 0.f;
+        float avg_frame_time = 0.f;
+        float avg_denoise_time = 0.f;
+        float avg_tonemap_time = 0.f;
+        float avg_rays_per_second = 0.f;
+        if (!profiling_active) {
+            if (stats_history_count == stats_window) {
+                const RenderStats &old_stats = stats_history[stats_history_index];
+                render_time -= old_stats.render_time;
+                frame_time -= old_stats.frame_time;
+                denoise_time -= old_stats.denoise_time;
+                tonemap_time -= old_stats.tonemap_time;
+                rays_per_second -= old_stats.rays_per_second;
+            } else {
+                ++stats_history_count;
+            }
+
+            stats_history[stats_history_index] = stats;
+            stats_history_index = (stats_history_index + 1) % stats_window;
+
+            render_time += stats.render_time;
+            frame_time += stats.frame_time;
+            denoise_time += stats.denoise_time;
+            tonemap_time += stats.tonemap_time;
+            rays_per_second += stats.rays_per_second;
+
+            const float stats_sample_count = static_cast<float>(stats_history_count);
+            avg_render_time = render_time / stats_sample_count;
+            avg_frame_time = frame_time / stats_sample_count;
+            avg_denoise_time = denoise_time / stats_sample_count;
+            avg_tonemap_time = tonemap_time / stats_sample_count;
+            avg_rays_per_second = rays_per_second / stats_sample_count;
         }
-
-        stats_history[stats_history_index] = stats;
-        stats_history_index = (stats_history_index + 1) % stats_window;
-
-        render_time += stats.render_time;
-        frame_time += stats.frame_time;
-        denoise_time += stats.denoise_time;
-        tonemap_time += stats.tonemap_time;
-        rays_per_second += stats.rays_per_second;
-
-        const float stats_sample_count = static_cast<float>(stats_history_count);
-        const float avg_render_time = render_time / stats_sample_count;
-        const float avg_frame_time = frame_time / stats_sample_count;
-        const float avg_denoise_time = denoise_time / stats_sample_count;
-        const float avg_tonemap_time = tonemap_time / stats_sample_count;
-        const float avg_rays_per_second = rays_per_second / stats_sample_count;
 
         if (benchmark_recorder) {
             BenchmarkFrameStats frame_stats;
@@ -515,6 +526,18 @@ void run_app(const std::vector<std::string> &args,
             // it is the progressive accumulation count.
             frame_stats.frames_accumulated = frame_id;
             benchmark_recorder->record(frame_stats);
+        }
+
+        if (profiling_active) {
+            display->new_frame();
+            ImGui_ImplSDL2_NewFrame(window);
+            ImGui::NewFrame();
+            ImGui::Render();
+            if (!resizing) {
+                display->display(renderer.get());
+            }
+            resizing = false;
+            continue;
         }
 
         display->new_frame();

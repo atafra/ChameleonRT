@@ -45,33 +45,13 @@ bool write_scene_report(const std::string &path_no_ext, const SceneReport &repor
 
 BenchmarkRecorder::BenchmarkRecorder(const std::string &output_base) : output_base(output_base)
 {
-    csv.reset(new std::ofstream(output_base + ".csv", std::ios::out | std::ios::trunc));
-    if (!csv || !*csv) {
-        std::fprintf(stderr,
-                     "profiling: failed to open '%s.csv' for writing; benchmark "
-                     "recording disabled\n",
-                     output_base.c_str());
-        csv.reset();
-        return;
-    }
-
-    // Standard columns followed by ChameleonRT's extended per-pass metrics.
-    // The names must match the report_config "perf_metric" values the analysis
-    // tooling plots, with "frames_total" used as the x-axis.
-    *csv << "frames_total"
-         << ",frames_accumulated"
-         << ",render_time_ms"
-         << ",app_time_ms"
-         << ",denoise_time_ms"
-         << ",tonemap_time_ms"
-         << ",rays_per_second" << '\n';
 }
 
 BenchmarkRecorder::~BenchmarkRecorder() = default;
 
 bool BenchmarkRecorder::active() const
 {
-    return csv && static_cast<bool>(*csv);
+    return enabled;
 }
 
 void BenchmarkRecorder::record(const BenchmarkFrameStats &frame)
@@ -80,17 +60,35 @@ void BenchmarkRecorder::record(const BenchmarkFrameStats &frame)
         return;
     }
 
-    *csv << frames_total << ',' << frame.frames_accumulated << ',' << frame.render_time_ms
-         << ',' << frame.app_time_ms << ',' << frame.denoise_time_ms << ','
-         << frame.tonemap_time_ms << ',' << frame.rays_per_second << '\n';
-    ++frames_total;
+    frames.push_back(frame);
 }
 
 void BenchmarkRecorder::finish(const BenchmarkEnvironment &env)
 {
-    if (csv) {
-        csv->flush();
-        csv.reset();
+    if (enabled) {
+        std::ofstream csv(output_base + ".csv", std::ios::out | std::ios::trunc);
+        if (!csv) {
+            std::fprintf(stderr,
+                         "profiling: failed to open '%s.csv' for writing\n",
+                         output_base.c_str());
+        } else {
+            // Standard columns followed by ChameleonRT's extended per-pass metrics.
+            // The names must match the report_config "perf_metric" values the analysis
+            // tooling plots, with "frames_total" used as the x-axis.
+            csv << "frames_total"
+                << ",frames_accumulated"
+                << ",render_time_ms"
+                << ",app_time_ms"
+                << ",denoise_time_ms"
+                << ",tonemap_time_ms"
+                << ",rays_per_second" << '\n';
+            for (size_t i = 0; i < frames.size(); ++i) {
+                const BenchmarkFrameStats &frame = frames[i];
+                csv << i << ',' << frame.frames_accumulated << ',' << frame.render_time_ms
+                    << ',' << frame.app_time_ms << ',' << frame.denoise_time_ms << ','
+                    << frame.tonemap_time_ms << ',' << frame.rays_per_second << '\n';
+            }
+        }
     }
 
     rapidjson::StringBuffer buffer;
