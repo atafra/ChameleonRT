@@ -25,12 +25,18 @@
 .PARAMETER Resolutions
 	Which resolutions to run. Default: 720p, 1080p, 1440p.
 
+.PARAMETER BenchmarkTitle
+	Short benchmark title used in the timestamped output folder name.
+
+.PARAMETER RunId
+	Optional explicit output folder name. Defaults to '<BenchmarkTitle>-yyyyMMdd_HHmmss'.
+
 .PARAMETER InstallDeps
 	Run 'pip install pandas plotly chart_studio' if the analysis dependencies are missing.
 
 .PARAMETER SummaryOutput
-	Path (relative to the repo root) of the combined HTML results summary generated after
-	the per-backend reports. The summary uses only the Python standard library.
+	Optional path (relative to the repo root) of the combined HTML results summary generated after
+	the per-backend reports. Defaults inside the timestamped report folder.
 
 .PARAMETER SkipCapture
 	Skip capture and (re)generate reports from existing data.
@@ -57,7 +63,9 @@ param(
 	[ValidateSet('720p', '1080p', '1440p')]
 	[string[]] $Resolutions = @('720p', '1080p', '1440p'),
 
-	[string] $SummaryOutput = 'benchmarks/reports/oidn_summary.html',
+	[string] $BenchmarkTitle = 'oidn_resolution_sweep',
+	[string] $RunId = '',
+	[string] $SummaryOutput = '',
 
 	[switch] $InstallDeps,
 	[switch] $SkipCapture,
@@ -104,6 +112,18 @@ try {
 	$tempConfigDir = Join-Path ([System.IO.Path]::GetTempPath()) 'chameleonrt_oidn_benchmarks'
 	New-Item -ItemType Directory -Force -Path $tempConfigDir | Out-Null
 
+	if ([string]::IsNullOrWhiteSpace($RunId)) {
+		$RunId = "$BenchmarkTitle-$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+	}
+	$runDataRoot = Join-Path 'benchmarks/data' $RunId
+	$runReportsRoot = Join-Path 'benchmarks/reports' $RunId
+	if ([string]::IsNullOrWhiteSpace($SummaryOutput)) {
+		$SummaryOutput = Join-Path $runReportsRoot 'oidn_summary.html'
+	}
+	Write-Host "Benchmark run id: $RunId" -ForegroundColor Cyan
+	Write-Host "Data root: $runDataRoot" -ForegroundColor Cyan
+	Write-Host "Reports root: $runReportsRoot" -ForegroundColor Cyan
+
 	# Accumulates '<Label> <data-dir>' pairs for the combined HTML summary generated
 	# after all backends have been processed.
 	$summaryBackendArgs = @()
@@ -145,6 +165,8 @@ try {
 	foreach ($name in $Backends) {
 		$job = $allJobs[$name]
 		Write-Host "`n=== Backend: $name ===" -ForegroundColor Green
+		$backendDataRoot = Join-Path $runDataRoot (Split-Path -Leaf $job.Data)
+		$backendReportsRoot = Join-Path $runReportsRoot (Split-Path -Leaf $job.Reports)
 
 		# The executable path is the one environment-specific value in the capture config;
 		# read it from there (single source of truth) and verify it exists.
@@ -158,8 +180,8 @@ try {
 		foreach ($resName in $Resolutions) {
 			$res = $resolutionTable[$resName]
 			$resLabel = $res.Label
-			$resData = Join-Path $job.Data $resName
-			$resReports = Join-Path $job.Reports $resName
+			$resData = Join-Path $backendDataRoot $resName
+			$resReports = Join-Path $backendReportsRoot $resName
 			$resTitle = "OIDN Synchronization Modes - $($job.Label) (Sponza, $resLabel)"
 			$resDesc = "Comparison of OIDN interop/synchronization modes on the $($job.Label) backend at $($res.Width)x$($res.Height)."
 

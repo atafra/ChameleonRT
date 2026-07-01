@@ -4,6 +4,7 @@
 #include <iosfwd>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Static scene statistics emitted for -scene-report. The schema mirrors what
@@ -32,6 +33,7 @@ struct BenchmarkEnvironment {
     std::string gpu_brand;
     std::string gpu_name;
     std::string gpu_driver_version;
+    std::vector<std::pair<std::string, std::string>> driver_environment;
     std::string display_frontend;
     std::string rt_backend;
     std::vector<std::string> cmdline;

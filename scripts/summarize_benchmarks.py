@@ -91,6 +91,8 @@ td.app span { position: relative; z-index: 1; }
 .delta.faster { color: var(--faster); font-weight: 600; }
 .delta.slower { color: var(--slower); font-weight: 600; }
 .delta.na { color: var(--muted); }
+.metric-warning { color: var(--baseline); cursor: help; font-weight: 700; margin-left: .25rem; }
+.note { color: var(--muted); font-size: .85rem; margin: .75rem 0 0; }
 .takeaways { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
   padding: 1.1rem 1.35rem 1.25rem; margin-bottom: 1.4rem; }
 .takeaways h2 { font-size: 1.1rem; margin: 0 0 .6rem; }
@@ -200,6 +202,22 @@ def fmt_ms(v):
     return "&mdash;" if v is None else f"{v:.2f}"
 
 
+BINARY_SEMAPHORE_WARNING = (
+    "For binary_semaphore, denoise_time_ms and render_time_ms attribution can be "
+    "inaccurate because some denoising work is measured under render time. "
+    "app_time_ms is still correct."
+)
+
+
+def fmt_attributed_ms(variant_name, metric_name, value):
+    text = fmt_ms(value)
+    if variant_name == "binary_semaphore" and metric_name in ("denoise_time_ms", "render_time_ms"):
+        return (
+            f'{text}<span class="metric-warning" title="{html.escape(BINARY_SEMAPHORE_WARNING)}">⚠</span>'
+        )
+    return text
+
+
 def derive_report_link(data_dir, output_dir):
     """Best-effort link to the matching analyze_benchmarks.py report, using the
     repo's data/<x> -> reports/<x> convention. Returns a relative URL or None."""
@@ -276,8 +294,8 @@ def render_backend_section(backend, output_dir):
             f'<td><div class="variant"><code>{html.escape(v["name"])}</code>{badge}</div></td>'
             f'<td class="num app">{bar}<span>{fmt_ms(app)}</span></td>'
             f'<td class="num">{delta_html}</td>'
-            f'<td class="num">{fmt_ms(v["means"].get("denoise_time_ms"))}</td>'
-            f'<td class="num">{fmt_ms(v["means"].get("render_time_ms"))}</td>'
+            f'<td class="num">{fmt_attributed_ms(v["name"], "denoise_time_ms", v["means"].get("denoise_time_ms"))}</td>'
+            f'<td class="num">{fmt_attributed_ms(v["name"], "render_time_ms", v["means"].get("render_time_ms"))}</td>'
             f'</tr>'
         )
 
@@ -286,6 +304,11 @@ def render_backend_section(backend, output_dir):
         f'<p class="links">Detailed report: <a href="{html.escape(link)}">{html.escape(link)}</a></p>'
         if link else ""
     )
+    warning_note = (
+        '<p class="note"><span class="metric-warning">⚠</span> '
+        'binary_semaphore denoise/render attribution may be inaccurate; app_time_ms is correct.</p>'
+        if any(v["name"] == "binary_semaphore" for v in variants) else ""
+    )
 
     return (
         f'<section class="backend"><h2>{label}{baseval}</h2>'
@@ -293,6 +316,7 @@ def render_backend_section(backend, output_dir):
         f'<th>Variant</th><th>app_time_ms</th><th>vs baseline</th>'
         f'<th>denoise_time_ms</th><th>render_time_ms</th>'
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+        f'{warning_note}'
         f'{link_html}</section>'
     )
 
@@ -365,6 +389,14 @@ def generate_html(backends, args, output_dir):
         gpu_driver_version = str(system.get("gpu_driver_version", "")).strip()
         if gpu_driver_version:
             chips.append(f'<span class="chip"><b>GPU Driver</b> {html.escape(gpu_driver_version)}</span>')
+        driver_environment = system.get("driver_environment", {})
+        if isinstance(driver_environment, dict):
+            for key in sorted(driver_environment):
+                value = str(driver_environment[key]).strip()
+                if value and value != "0":
+                    chips.append(
+                        f'<span class="chip"><b>{html.escape(str(key))}</b> {html.escape(value)}</span>'
+                    )
     chips.append(
         f'<span class="chip"><b>Generated</b> '
         f'{datetime.now().strftime("%Y-%m-%d %H:%M")}</span>'

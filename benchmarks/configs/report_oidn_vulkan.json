@@ -1,7 +1,7 @@
 {
     "title": "OIDN Synchronization Modes - Vulkan (Sponza)",
     "description": "Comparison of OIDN interop/synchronization modes on the Vulkan backend.",
-    "ignore_frames": 20,
+    "ignore_frames": 120,
     "smoothing_window_size": 5,
     "generate_plots": [
         {

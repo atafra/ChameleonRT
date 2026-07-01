@@ -7,6 +7,7 @@
 # Usage:
 #   python analyze_benchmarks.py <REPORT_CONFIG.JSON> <BENCHMARK_DIR_NAME> <REPORT_DIR_NAME>
 import json
+import html
 import math
 import subprocess
 import shutil
@@ -71,6 +72,18 @@ ignore_frames_count = 0
 smoothing_window_size = 5
 report_title = "Benchmark Report"
 report_description = ""
+
+BINARY_SEMAPHORE_WARNING = (
+    "Warning: for binary_semaphore, denoise_time_ms and render_time_ms attribution "
+    "can be inaccurate because some denoising work is measured under render time. "
+    "app_time_ms is still correct."
+)
+
+
+def metric_label(benchmark_name, metric_name):
+    if benchmark_name == "binary_semaphore" and metric_name in ("denoise_time_ms", "render_time_ms"):
+        return benchmark_name + " ⚠"
+    return benchmark_name
 
 if "ignore_frames" in report_config:
     ignore_frames_count = report_config["ignore_frames"]
@@ -204,11 +217,12 @@ for plot_idx, report_plot in enumerate(report_config["generate_plots"]):
             try:
                 data_col = benchmark_dataframes[i][col_name]
                 data_count += 1
-                mean_names.append(benchmark_names[i])
+                label = metric_label(benchmark_names[i], col_name)
+                mean_names.append(label)
                 mean_values.append(data_col.mean())
                 data_colors.append(color_sequence[benchmark_indices[i]])
                 data_ewm = data_col.ewm(span = smoothing_window_size, adjust=False).mean()
-                fig.add_trace(go.Scatter(x = benchmark_dataframes[i]["frames_total"], y = data_ewm, mode = "lines", line = dict(width=3, color = color_sequence[benchmark_indices[i]]), name = benchmark_names[i]))
+                fig.add_trace(go.Scatter(x = benchmark_dataframes[i]["frames_total"], y = data_ewm, mode = "lines", line = dict(width=3, color = color_sequence[benchmark_indices[i]]), name = label))
             except KeyError as e:
                 print(f"Skipping chart for {benchmark_names[i]} due to missing column: {e}")
             except Exception as e:
@@ -324,6 +338,13 @@ benchmark_desc_html += '''
 </ul>
 '''
 
+binary_warning_html = ""
+if "binary_semaphore" in benchmark_names:
+    binary_warning_html = '''
+<div class="alert alert-warning" role="alert">
+<b>binary_semaphore timing attribution:</b> ''' + BINARY_SEMAPHORE_WARNING + '''
+</div>'''
+
 #technically each benchmark might have had different resolutions or other display settings. However, we will only display one of them for now
 system_info = system_infos[first_non_baseline_idx]
 launch_info = launch_infos[first_non_baseline_idx]
@@ -343,6 +364,16 @@ if gpu_driver_version:
     gpu_driver_version_row = '''
 <tr>
 <td><b>GPU Driver Version</b></td><td>''' + gpu_driver_version + '''</td></tr>'''
+
+driver_environment = system_info.get("driver_environment", {})
+driver_environment_rows = ""
+if isinstance(driver_environment, dict) and driver_environment:
+    for key in sorted(driver_environment):
+        value = str(driver_environment[key]).strip()
+        if value and value != "0":
+            driver_environment_rows += '''
+<tr>
+<td><b>''' + html.escape(str(key)) + '''</b></td><td>''' + html.escape(value) + '''</td></tr>'''
 
 summary_html = '''
 <table class="summaryTable">
@@ -373,7 +404,7 @@ summary_html = '''
 <tr>
 <td width="100px"><b>CPU</b></td><td>''' + str(system_info["cpu"]) + '''</td></tr>
 <tr>
-<td><b>GPU</b></td><td>''' + str(system_info["gpu"]) + '''</td></tr>''' + gpu_name_row + gpu_driver_version_row + '''
+<td><b>GPU</b></td><td>''' + str(system_info["gpu"]) + '''</td></tr>''' + gpu_name_row + gpu_driver_version_row + driver_environment_rows + '''
 <tr>
 <td><b>Display</b></td><td>''' + str(system_info["display"]) + '''</td></tr>
 <tr>
@@ -469,6 +500,8 @@ html_string = '''
             <p>''' + report_description + '''</p>
 
             ''' + benchmark_desc_html + ''' 
+
+            ''' + binary_warning_html + '''
 
             ''' + summary_html + '''
 

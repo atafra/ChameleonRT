@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -40,6 +41,19 @@ const std::string USAGE =
     "\t-profiling-fps <n>     Scales the default benchmark frame budget when\n"
     "\t                       -benchmark-frames is unset\n"
     "\n";
+
+std::vector<std::pair<std::string, std::string>> get_driver_environment()
+{
+    const char *names[] = {"EnableHostFunctionBasedExternalSemaphores", "NEOReadDebugKeys"};
+    std::vector<std::pair<std::string, std::string>> result;
+    for (const char *name : names) {
+        const char *value = std::getenv(name);
+        if (value && value[0] != '\0' && std::strcmp(value, "0") != 0) {
+            result.emplace_back(name, value);
+        }
+    }
+    return result;
+}
 
 int win_width = 1280;
 int win_height = 720;
@@ -711,6 +725,7 @@ void run_app(const std::vector<std::string> &args,
         env.gpu_brand = gpu_brand;
         env.gpu_name = gpu_name;
         env.gpu_driver_version = gpu_driver_version;
+        env.driver_environment = get_driver_environment();
         env.display_frontend = display_frontend;
         env.rt_backend = rt_backend;
         env.cmdline = args;

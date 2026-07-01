@@ -68,6 +68,8 @@ for i in range(len(benchmark_variants)):
         + benchmark_config.get("shared_benchmark_cmd_postfix", "")
         + " -profiling benchmark_script -profiling-fps 1"
     )
+    if "benchmark_frames" in benchmark_config:
+        crt_cmd_line += " -benchmark-frames " + str(benchmark_config["benchmark_frames"])
 
     # The scene report is written once into the benchmark root so analyze can find
     # scene_info.json next to the variant directories.
