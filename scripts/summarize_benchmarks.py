@@ -41,7 +41,7 @@ CSS = """
 :root {
   --bg: #0f1420; --panel: #171d2b; --panel-2: #1e2537; --line: #2a3346;
   --text: #e6e9f0; --muted: #97a2b8; --accent: #5b8cff;
-  --faster: #37d39b; --slower: #ff6b6b; --baseline: #f4c04e;
+  --faster: #37d39b; --slower: #ff6b6b; --baseline: #f4c04e; --failed: #ff6b6b;
 }
 * { box-sizing: border-box; }
 body {
@@ -83,6 +83,8 @@ tbody tr.baseline { background: rgba(244,192,78,.07); }
   border-radius: 999px; text-transform: uppercase; }
 .badge.base { color: var(--baseline); border: 1px solid rgba(244,192,78,.4); }
 .badge.best { color: var(--faster); border: 1px solid rgba(55,211,155,.4); }
+.badge.failed { color: var(--failed); border: 1px solid rgba(255,107,107,.45); }
+tbody tr.failed { background: rgba(255,107,107,.07); }
 td.num { font-variant-numeric: tabular-nums; position: relative; }
 td.app { min-width: 130px; }
 .bar { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(91,140,255,.14);
@@ -91,6 +93,7 @@ td.app span { position: relative; z-index: 1; }
 .delta.faster { color: var(--faster); font-weight: 600; }
 .delta.slower { color: var(--slower); font-weight: 600; }
 .delta.na { color: var(--muted); }
+.failure { color: var(--muted); font-size: .84rem; }
 .metric-warning { color: var(--baseline); cursor: help; font-weight: 700; margin-left: .25rem; }
 .note { color: var(--muted); font-size: .85rem; margin: .75rem 0 0; }
 .takeaways { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
@@ -141,9 +144,19 @@ def load_json(path):
 
 def load_variant(dir_path, ignore_frames):
     csv_path = dir_path / "benchmark.csv"
-    if not csv_path.is_file():
-        return None
-    means, total, used = read_csv_means(csv_path, ignore_frames)
+    status = load_json(dir_path / "benchmark_status.json")
+    if not status:
+        status = {
+            "name": dir_path.name,
+            "status": "completed" if csv_path.is_file() else "missing_artifacts",
+            "message": "Legacy benchmark data without benchmark_status.json." if csv_path.is_file() else "benchmark.csv is missing.",
+        }
+    if csv_path.is_file():
+        means, total, used = read_csv_means(csv_path, ignore_frames)
+    else:
+        means = {key: None for key in METRIC_KEYS}
+        total = 0
+        used = 0
     meta = load_json(dir_path / "benchmark_meta.json")
     return {
         "name": dir_path.name,
@@ -152,6 +165,9 @@ def load_variant(dir_path, ignore_frames):
         "used_frames": used,
         "desc": meta.get("desc", ""),
         "benchmark_json": load_json(dir_path / "benchmark.json"),
+        "status": status.get("status", "completed"),
+        "status_message": status.get("message", ""),
+        "elapsed_sec": status.get("elapsed_sec"),
     }
 
 
@@ -160,7 +176,7 @@ def load_backend(label, data_dir, ignore_frames):
     variants = []
     if data_dir.is_dir():
         for child in sorted(data_dir.iterdir()):
-            if child.is_dir() and (child / "benchmark.csv").is_file():
+            if child.is_dir() and ((child / "benchmark.csv").is_file() or (child / "benchmark_status.json").is_file()):
                 v = load_variant(child, ignore_frames)
                 if v:
                     variants.append(v)
@@ -236,7 +252,7 @@ def fastest_variant(backend):
     base = backend.get("baseline")
     cands = [
         v for v in backend["variants"]
-        if v is not base and v["means"].get("app_time_ms") is not None
+        if v is not base and v.get("status") == "completed" and v["means"].get("app_time_ms") is not None
     ]
     if not cands:
         return None
@@ -268,10 +284,13 @@ def render_backend_section(backend, output_dir):
     rows = []
     for v in variants:
         is_base = v is base
+        failed = v.get("status", "completed") != "completed"
         app = v["means"].get("app_time_ms")
         d = None if is_base else delta_pct(app, base_app)
         if is_base:
             delta_html = '<span class="delta na">&mdash;</span>'
+        elif failed:
+            delta_html = '<span class="delta slower">failed</span>'
         elif d is None:
             delta_html = '<span class="delta na">&mdash;</span>'
         else:
@@ -281,6 +300,8 @@ def render_backend_section(backend, output_dir):
         badge = ""
         if is_base:
             badge = '<span class="badge base">baseline</span>'
+        if failed:
+            badge += f'<span class="badge failed">{html.escape(v.get("status", "failed"))}</span>'
         elif fastest is not None and v is fastest:
             badge = '<span class="badge best">fastest</span>'
 
@@ -289,9 +310,13 @@ def render_backend_section(backend, output_dir):
             pct = max(4.0, app / max_app * 100.0)
             bar = f'<div class="bar" style="width:{pct:.1f}%"></div>'
 
+        failure_html = ""
+        if failed:
+            failure_html = f'<div class="failure">{html.escape(v.get("status_message", ""))}</div>'
+
         rows.append(
-            f'<tr class="{ "baseline" if is_base else "" }">'
-            f'<td><div class="variant"><code>{html.escape(v["name"])}</code>{badge}</div></td>'
+            f'<tr class="{ "baseline" if is_base else "failed" if failed else "" }">'
+            f'<td><div class="variant"><code>{html.escape(v["name"])}</code>{badge}</div>{failure_html}</td>'
             f'<td class="num app">{bar}<span>{fmt_ms(app)}</span></td>'
             f'<td class="num">{delta_html}</td>'
             f'<td class="num">{fmt_attributed_ms(v["name"], "denoise_time_ms", v["means"].get("denoise_time_ms"))}</td>'

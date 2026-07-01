@@ -2,7 +2,7 @@
     "title": "OIDN Sync Modes - DXR (Sponza)",
     "crt_working_dir": ".",
     "crt_executable_rel_path": "build/vs/Release/chameleonrt.exe",
-    "benchmark_frames": 500,
+    "benchmark_frames": 200,
     "shared_benchmark_cmd_prefix": " dxr ./Assets/Sponza/sponza.obj -img 1920 1080",
     "shared_benchmark_cmd_postfix": "",
     "benchmark_configs": [

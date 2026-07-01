@@ -47,9 +47,18 @@ benchmark_root_dir = Path(benchmark_dir_name)
 report_dir = Path(report_dir_name)
 report_dir.mkdir(parents=True, exist_ok=True)
 
+
+def load_json_file(path, default=None):
+    if default is None:
+        default = {}
+    try:
+        with open(str(path)) as json_file:
+            return json.load(json_file)
+    except Exception:
+        return default
+
 #scene info
-with open(str(benchmark_root_dir / Path("scene_info.json"))) as json_file:
-    scene_info = json.load(json_file)["info"]
+scene_info = load_json_file(benchmark_root_dir / Path("scene_info.json"), {}).get("info", {})
 
 try:
     with open(str(benchmark_root_dir / Path("benchmark_info.json"))) as json_file:
@@ -65,6 +74,7 @@ launch_infos = []
 benchmark_dataframes = []
 benchmark_names = []
 benchmark_descs = []
+benchmark_statuses = []
 benchmark_indices = [] #used to have a fixed color for different reports
 plot_subset = []
 benchmark_name_LUT = {}
@@ -134,12 +144,25 @@ else:
     print ("warning : failed to find dump frames dir!  Will be omitted from report")
 
 benchmark_idx = 0
-first_non_baseline_idx = 0  # Initialize to None to indicate no non-baseline directory found yet
+first_non_baseline_idx = None
 
 for benchmark_dir in benchmark_root_dir.iterdir():
     if benchmark_dir.is_dir():
+        if benchmark_dir.stem == "dump_frames":
+            continue
+
+        # Skip data if not selected for this current report
+        if len(plot_subset) > 0 and not benchmark_dir.stem in plot_subset:
+            continue
         
         is_baseline = benchmark_dir.stem.startswith("baseline")
+
+        benchmark_status_path = benchmark_dir / Path("benchmark_status.json")
+        benchmark_status = load_json_file(benchmark_status_path, {
+            "name": benchmark_dir.stem,
+            "status": "completed",
+            "message": "Legacy benchmark data without benchmark_status.json.",
+        })
         
         # Load render environment info
         benchmark_json_path = benchmark_dir / Path("benchmark.json")
@@ -147,19 +170,12 @@ for benchmark_dir in benchmark_root_dir.iterdir():
             print(str(benchmark_json_path))
             with open(str(benchmark_json_path)) as json_file:
                 json_benchmark = json.load(json_file)
-                system_infos.append(json_benchmark.get("system", "Baseline"))
-                launch_infos.append(json_benchmark.get("launch", "Baseline"))
+                system_infos.append(json_benchmark.get("system", {}))
+                launch_infos.append(json_benchmark.get("launch", {}))
         else:
             # Append default values if benchmark.json is missing
-            system_infos.append("Baseline")
-            launch_infos.append("Baseline")
-
-        if benchmark_dir.stem == "dump_frames":
-            continue
-
-        # Skip data if not selected for this current report
-        if len(plot_subset) > 0 and not benchmark_dir.stem in plot_subset:
-            continue
+            system_infos.append({})
+            launch_infos.append({})
 
         # Fetch benchmark description from capture metadata
         benchmark_meta_path = benchmark_dir / Path("benchmark_meta.json")
@@ -172,17 +188,26 @@ for benchmark_dir in benchmark_root_dir.iterdir():
             benchmark_desc = "Baseline"
 
         benchmark_descs.append(benchmark_desc)
+        benchmark_statuses.append(benchmark_status)
         
         benchmark_name_LUT[benchmark_dir.stem] = len(benchmark_names)
         benchmark_names.append(benchmark_dir.stem)
         benchmark_indices.append(benchmark_idx)
-        benchmark_df = pd.read_csv(benchmark_dir / "benchmark.csv")
-        if ignore_frames_count > 0:
-            benchmark_df = benchmark_df.drop(benchmark_df.index[0:ignore_frames_count])
-        benchmark_dataframes.append(benchmark_df)
+        benchmark_csv_path = benchmark_dir / "benchmark.csv"
+        if benchmark_csv_path.exists():
+            benchmark_df = pd.read_csv(benchmark_csv_path)
+            if ignore_frames_count > 0:
+                benchmark_df = benchmark_df.drop(benchmark_df.index[0:ignore_frames_count])
+            benchmark_dataframes.append(benchmark_df)
+        else:
+            print(f"Skipping data for {benchmark_dir.stem}: benchmark.csv is missing")
+            benchmark_dataframes.append(None)
 
-        if not is_baseline and first_non_baseline_idx == 0:
+        if not is_baseline and first_non_baseline_idx is None and benchmark_json_path.exists():
             first_non_baseline_idx = benchmark_idx  # Set to current index
+
+        if first_non_baseline_idx is None and benchmark_json_path.exists():
+            first_non_baseline_idx = benchmark_idx
 
         benchmark_idx += 1
 
@@ -214,6 +239,8 @@ for plot_idx, report_plot in enumerate(report_config["generate_plots"]):
     fig = go.Figure()
     if report_plot["plot_type"] == "standard":
         for i in range(len(benchmark_names)):
+            if benchmark_dataframes[i] is None:
+                continue
             try:
                 data_col = benchmark_dataframes[i][col_name]
                 data_count += 1
@@ -229,7 +256,14 @@ for plot_idx, report_plot in enumerate(report_config["generate_plots"]):
                 print(f"An error occurred while processing {benchmark_names[i]}: {e}")
 
     elif report_plot["plot_type"] == "relative":
+        if report_plot["baseline"] not in benchmark_name_LUT:
+            print(f"Relative plot : Skipping chart for {col_name} because baseline '{report_plot['baseline']}' is missing")
+            continue
         baseline_col_idx = benchmark_name_LUT[report_plot["baseline"]]
+
+        if benchmark_dataframes[baseline_col_idx] is None:
+            print(f"Relative plot : Skipping chart for {col_name} because baseline '{report_plot['baseline']}' has no data")
+            continue
 
         try:
             baseline_col = benchmark_dataframes[baseline_col_idx][col_name]
@@ -245,14 +279,21 @@ for plot_idx, report_plot in enumerate(report_config["generate_plots"]):
         for i in range(len(benchmark_names)):
             if i == baseline_col_idx:
                 continue
-            data_col = benchmark_dataframes[i][col_name]
-            data_colors.append(color_sequence[benchmark_indices[i]])
-            data_count += 1
-            data_ewm = data_col.ewm(span = smoothing_window_size, adjust=False).mean()
-            data_rel = data_ewm / baseline_ewm
-            mean_names.append(benchmark_names[i])
-            mean_values.append((data_col/baseline_col).mean() * 100.0)
-            fig.add_trace(go.Scatter(x = benchmark_dataframes[i]["frames_total"], y = data_rel, mode = "lines", line = dict(width=3, color = color_sequence[benchmark_indices[i]]), name = benchmark_names[i]))
+            if benchmark_dataframes[i] is None:
+                continue
+            try:
+                data_col = benchmark_dataframes[i][col_name]
+                data_colors.append(color_sequence[benchmark_indices[i]])
+                data_count += 1
+                data_ewm = data_col.ewm(span = smoothing_window_size, adjust=False).mean()
+                data_rel = data_ewm / baseline_ewm
+                mean_names.append(benchmark_names[i])
+                mean_values.append((data_col/baseline_col).mean() * 100.0)
+                fig.add_trace(go.Scatter(x = benchmark_dataframes[i]["frames_total"], y = data_rel, mode = "lines", line = dict(width=3, color = color_sequence[benchmark_indices[i]]), name = benchmark_names[i]))
+            except KeyError as e:
+                print(f"Relative plot : Skipping chart for {benchmark_names[i]} due to missing column: {e}")
+            except Exception as e:
+                print(f"Relative plot : An error occurred while processing {benchmark_names[i]}: {e}")
         fig.update_layout(yaxis_tickformat = '.2%')
 
     if "constant" in report_plot:
@@ -263,7 +304,8 @@ for plot_idx, report_plot in enumerate(report_config["generate_plots"]):
             name=report_plot["constant-legend"],
             showlegend=True
         ))      
-        fig.add_shape(go.layout.Shape(type="line", x0=0, y0=report_plot["constant"], x1=len(fig.data[0].x), y1=report_plot["constant"], line=dict(color=color_sequence[len(benchmark_indices) + 1], width=3)))
+        constant_x1 = len(fig.data[0].x) if len(fig.data) > 0 else 1
+        fig.add_shape(go.layout.Shape(type="line", x0=0, y0=report_plot["constant"], x1=constant_x1, y1=report_plot["constant"], line=dict(color=color_sequence[len(benchmark_indices) + 1], width=3)))
     
     fig.update_layout(hovermode='x unified')
     fig.update_layout(title_text = display_name + unit_name)
@@ -333,10 +375,37 @@ benchmark_desc_html = '''
 <ul>
 '''
 for i in range(len(benchmark_names)):
-    benchmark_desc_html += f"<li><b>{benchmark_names[i]}</b>: {benchmark_descs[i]}</li>"
+    status = benchmark_statuses[i].get("status", "completed")
+    status_msg = benchmark_statuses[i].get("message", "")
+    status_suffix = ""
+    if status != "completed":
+        status_suffix = f" <span class=\"label label-danger\">{html.escape(status)}</span> {html.escape(status_msg)}"
+    benchmark_desc_html += f"<li><b>{html.escape(benchmark_names[i])}</b>: {html.escape(benchmark_descs[i])}{status_suffix}</li>"
 benchmark_desc_html += '''
 </ul>
 '''
+
+failed_benchmark_html = ""
+failed_benchmarks = [s for s in benchmark_statuses if s.get("status", "completed") != "completed"]
+if failed_benchmarks:
+    failed_benchmark_html = '''
+<div class="alert alert-danger" role="alert">
+<h4>Failed configurations</h4>
+<table class="table table-condensed">
+<thead><tr><th>Variant</th><th>Status</th><th>Elapsed (s)</th><th>Reason</th></tr></thead>
+<tbody>'''
+    for s in failed_benchmarks:
+        elapsed = s.get("elapsed_sec", "")
+        elapsed_text = f"{float(elapsed):.1f}" if isinstance(elapsed, (int, float)) else ""
+        failed_benchmark_html += (
+            "<tr><td><code>" + html.escape(str(s.get("name", ""))) + "</code></td>"
+            "<td>" + html.escape(str(s.get("status", ""))) + "</td>"
+            "<td>" + html.escape(elapsed_text) + "</td>"
+            "<td>" + html.escape(str(s.get("message", ""))) + "</td></tr>"
+        )
+    failed_benchmark_html += '''
+</tbody></table>
+</div>'''
 
 binary_warning_html = ""
 if "binary_semaphore" in benchmark_names:
@@ -346,8 +415,12 @@ if "binary_semaphore" in benchmark_names:
 </div>'''
 
 #technically each benchmark might have had different resolutions or other display settings. However, we will only display one of them for now
-system_info = system_infos[first_non_baseline_idx]
-launch_info = launch_infos[first_non_baseline_idx]
+if first_non_baseline_idx is None:
+    system_info = {}
+    launch_info = {}
+else:
+    system_info = system_infos[first_non_baseline_idx]
+    launch_info = launch_infos[first_non_baseline_idx]
 
 # The "gpu" field is kept for backwards compatibility. Newer captures also emit
 # a user-facing GPU name queried from the active graphics backend.
@@ -384,15 +457,15 @@ summary_html = '''
 <table class="greyGridTable">
 <tbody>
 <tr>
-<td width="150px"><b>unique tris</b></td><td>''' + str(scene_info["unique_tris"]) + '''</td></tr>
+<td width="150px"><b>unique tris</b></td><td>''' + str(scene_info.get("unique_tris", "")) + '''</td></tr>
 <tr>
-<td><b>total tris</b></td><td>''' + str(scene_info["total_tris"]) + '''</td></tr>
+<td><b>total tris</b></td><td>''' + str(scene_info.get("total_tris", "")) + '''</td></tr>
 <tr>
-<td><b>param meshes</b></td><td>''' + str(scene_info["num_param_meshes"]) + '''</td></tr>
+<td><b>param meshes</b></td><td>''' + str(scene_info.get("num_param_meshes", "")) + '''</td></tr>
 <tr>
-<td><b>instances</b></td><td>''' + str(scene_info["num_instances"]) + '''</td></tr>
+<td><b>instances</b></td><td>''' + str(scene_info.get("num_instances", "")) + '''</td></tr>
 <tr>
-<td><b>lod groups</b></td><td>''' + str(scene_info["num_lod_groups"]) + '''</td></tr>
+<td><b>lod groups</b></td><td>''' + str(scene_info.get("num_lod_groups", "")) + '''</td></tr>
 </tbody>
 </tr>
 </table>
@@ -402,15 +475,15 @@ summary_html = '''
 <table class="greyGridTable">
 <tbody>
 <tr>
-<td width="100px"><b>CPU</b></td><td>''' + str(system_info["cpu"]) + '''</td></tr>
+<td width="100px"><b>CPU</b></td><td>''' + str(system_info.get("cpu", "")) + '''</td></tr>
 <tr>
-<td><b>GPU</b></td><td>''' + str(system_info["gpu"]) + '''</td></tr>''' + gpu_name_row + gpu_driver_version_row + driver_environment_rows + '''
+<td><b>GPU</b></td><td>''' + str(system_info.get("gpu", "")) + '''</td></tr>''' + gpu_name_row + gpu_driver_version_row + driver_environment_rows + '''
 <tr>
-<td><b>Display</b></td><td>''' + str(system_info["display"]) + '''</td></tr>
+<td><b>Display</b></td><td>''' + str(system_info.get("display", "")) + '''</td></tr>
 <tr>
-<td><b>Display Res</b></td><td>''' + f"{launch_info['display_res'][0]} x {launch_info['display_res'][1]}" + '''</td></tr>
+<td><b>Display Res</b></td><td>''' + (f"{launch_info['display_res'][0]} x {launch_info['display_res'][1]}" if "display_res" in launch_info else "") + '''</td></tr>
 <tr>
-<td><b>Render Res</b></td><td>''' + f"{launch_info['render_res'][0]} x {launch_info['render_res'][1]}" + '''</td></tr>
+<td><b>Render Res</b></td><td>''' + (f"{launch_info['render_res'][0]} x {launch_info['render_res'][1]}" if "render_res" in launch_info else "") + '''</td></tr>
 </tbody>
 </tr>
 </table>
@@ -502,6 +575,8 @@ html_string = '''
             ''' + benchmark_desc_html + ''' 
 
             ''' + binary_warning_html + '''
+
+            ''' + failed_benchmark_html + '''
 
             ''' + summary_html + '''
 

@@ -38,6 +38,10 @@
 	Optional path (relative to the repo root) of the combined HTML results summary generated after
 	the per-backend reports. Defaults inside the timestamped report folder.
 
+.PARAMETER BenchmarkTimeoutSec
+	Per-variant ChameleonRT watchdog timeout in seconds. Hung variants are killed and reported as
+	failed while the rest of the sweep continues.
+
 .PARAMETER SkipCapture
 	Skip capture and (re)generate reports from existing data.
 
@@ -61,11 +65,12 @@ param(
 	[string] $OneApiBin = 'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin',
 
 	[ValidateSet('720p', '1080p', '1440p')]
-	[string[]] $Resolutions = @('720p', '1080p', '1440p'),
+	[string[]] $Resolutions = @('720p', '1080p'),
 
 	[string] $BenchmarkTitle = 'oidn_resolution_sweep',
 	[string] $RunId = '',
 	[string] $SummaryOutput = '',
+	[int] $BenchmarkTimeoutSec = 120,
 
 	[switch] $InstallDeps,
 	[switch] $SkipCapture,
@@ -123,6 +128,7 @@ try {
 	Write-Host "Benchmark run id: $RunId" -ForegroundColor Cyan
 	Write-Host "Data root: $runDataRoot" -ForegroundColor Cyan
 	Write-Host "Reports root: $runReportsRoot" -ForegroundColor Cyan
+	Write-Host "Per-variant timeout: $BenchmarkTimeoutSec seconds" -ForegroundColor Cyan
 
 	# Accumulates '<Label> <data-dir>' pairs for the combined HTML summary generated
 	# after all backends have been processed.
@@ -188,6 +194,7 @@ try {
 			$captureCfg = Get-Content $job.Capture -Raw | ConvertFrom-Json
 			$captureCfg.title = "OIDN Sync Modes - $($job.Label) (Sponza, $resLabel)"
 			$captureCfg.shared_benchmark_cmd_prefix = " $name ./Assets/Sponza/sponza.obj -img $($res.Width) $($res.Height)"
+			$captureCfg | Add-Member -NotePropertyName benchmark_timeout_sec -NotePropertyValue $BenchmarkTimeoutSec -Force
 			$captureCfgPath = Join-Path $tempConfigDir "capture_oidn_${name}_${resName}.json"
 			$captureCfg | ConvertTo-Json -Depth 20 | Set-Content -Encoding ASCII $captureCfgPath
 
