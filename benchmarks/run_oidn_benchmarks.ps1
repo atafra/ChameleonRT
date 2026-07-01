@@ -65,7 +65,7 @@ param(
 	[string] $OneApiBin = 'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin',
 
 	[ValidateSet('720p', '1080p', '1440p')]
-	[string[]] $Resolutions = @('720p', '1080p'),
+	[string[]] $Resolutions = @('720p', '1080p', '1440p'),
 
 	[string] $BenchmarkTitle = 'oidn_resolution_sweep',
 	[string] $RunId = '',
