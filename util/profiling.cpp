@@ -103,6 +103,10 @@ void BenchmarkRecorder::finish(const BenchmarkEnvironment &env)
     writer.String(env.cpu_brand.c_str());
     writer.Key("gpu");
     writer.String(env.gpu_brand.c_str());
+    writer.Key("gpu_name");
+    writer.String(env.gpu_name.c_str());
+    writer.Key("gpu_driver_version");
+    writer.String(env.gpu_driver_version.c_str());
     writer.Key("display");
     writer.String(env.display_frontend.c_str());
     writer.EndObject();

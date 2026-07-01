@@ -103,6 +103,30 @@ std::string DXDisplay::gpu_brand()
     return conv.to_bytes(desc.Description);
 }
 
+GpuInfo DXDisplay::gpu_info()
+{
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    DXGI_ADAPTER_DESC1 desc;
+    bool found_hardware_adapter = false;
+    for (uint32_t i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        adapter->GetDesc1(&desc);
+        if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
+            found_hardware_adapter = true;
+            break;
+        }
+        adapter.Reset();
+    }
+
+    if (!found_hardware_adapter) {
+        factory->EnumAdapters1(0, &adapter);
+        adapter->GetDesc1(&desc);
+    }
+
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+    const std::string name = conv.to_bytes(desc.Description);
+    return make_gpu_info(name, desc.VendorId, desc.DeviceId);
+}
+
 std::string DXDisplay::name()
 {
     return "DirectX 12";

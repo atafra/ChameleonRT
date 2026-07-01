@@ -1,0 +1,5 @@
+# Generated, platform-specific benchmark artifacts. The reproducible inputs
+# (configs, scripts, plan) stay tracked; captured data and generated reports do not.
+data/
+reports/
+oidn_summary.html

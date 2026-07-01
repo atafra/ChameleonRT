@@ -30,6 +30,8 @@ bool write_scene_report(const std::string &path_no_ext, const SceneReport &repor
 struct BenchmarkEnvironment {
     std::string cpu_brand;
     std::string gpu_brand;
+    std::string gpu_name;
+    std::string gpu_driver_version;
     std::string display_frontend;
     std::string rt_backend;
     std::vector<std::string> cmdline;

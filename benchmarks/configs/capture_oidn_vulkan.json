@@ -1,0 +1,24 @@
+{
+    "title": "OIDN Sync Modes - Vulkan (Sponza, 1080p)",
+    "crt_working_dir": ".",
+    "crt_executable_rel_path": "build/vs/Release/chameleonrt.exe",
+    "shared_benchmark_cmd_prefix": " vulkan ./Assets/Sponza/sponza.obj -img 1920 1080",
+    "shared_benchmark_cmd_postfix": "",
+    "benchmark_configs": [
+        {
+            "name": "baseline_host_blocking",
+            "desc": "Baseline: host-side blocking synchronization between the renderer and OIDN.",
+            "benchmark_cmd": " -oidn-interop host_blocking"
+        },
+        {
+            "name": "timeline_semaphore",
+            "desc": "GPU-side synchronization via a shared timeline semaphore.",
+            "benchmark_cmd": " -oidn-interop timeline_semaphore"
+        },
+        {
+            "name": "binary_semaphore",
+            "desc": "GPU-side synchronization via a shared binary semaphore.",
+            "benchmark_cmd": " -oidn-interop binary_semaphore"
+        }
+    ]
+}

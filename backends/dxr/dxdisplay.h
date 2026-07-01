@@ -39,6 +39,8 @@ struct DXDisplay : Display {
 
     std::string gpu_brand() override;
 
+    GpuInfo gpu_info() override;
+
     std::string name() override;
 
     void resize(const int fb_width, const int fb_height) override;

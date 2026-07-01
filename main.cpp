@@ -288,7 +288,10 @@ void run_app(const std::vector<std::string> &args,
     std::string oidn_interop_mode = renderer->get_oidn_interop_mode();
 #endif
     const std::string cpu_brand = get_cpu_brand();
-    const std::string gpu_brand = display->gpu_brand();
+    const GpuInfo gpu_info = display->gpu_info();
+    const std::string gpu_brand = gpu_info.driver;
+    const std::string gpu_name = gpu_info.name.empty() ? gpu_brand : gpu_info.name;
+    const std::string gpu_driver_version = gpu_info.driver_version;
     const std::string image_output = "chameleonrt.png";
     const std::string display_frontend = display->name();
 
@@ -513,6 +516,12 @@ void run_app(const std::vector<std::string> &args,
         ImGui::Text("RT Backend: %s", rt_backend.c_str());
         ImGui::Text("CPU: %s", cpu_brand.c_str());
         ImGui::Text("GPU: %s", gpu_brand.c_str());
+        if (gpu_name != gpu_brand) {
+            ImGui::Text("GPU Name: %s", gpu_name.c_str());
+        }
+        if (!gpu_driver_version.empty()) {
+            ImGui::Text("GPU Driver Version: %s", gpu_driver_version.c_str());
+        }
         ImGui::Text("Accumulated Frames: %zu", frame_id);
         ImGui::Text("Display Frontend: %s (%dx%d)",
                     display_frontend.c_str(),
@@ -700,6 +709,8 @@ void run_app(const std::vector<std::string> &args,
         BenchmarkEnvironment env;
         env.cpu_brand = cpu_brand;
         env.gpu_brand = gpu_brand;
+        env.gpu_name = gpu_name;
+        env.gpu_driver_version = gpu_driver_version;
         env.display_frontend = display_frontend;
         env.rt_backend = rt_backend;
         env.cmdline = args;

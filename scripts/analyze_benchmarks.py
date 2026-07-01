@@ -327,6 +327,23 @@ benchmark_desc_html += '''
 #technically each benchmark might have had different resolutions or other display settings. However, we will only display one of them for now
 system_info = system_infos[first_non_baseline_idx]
 launch_info = launch_infos[first_non_baseline_idx]
+
+# The "gpu" field is kept for backwards compatibility. Newer captures also emit
+# a user-facing GPU name queried from the active graphics backend.
+gpu_name = str(system_info.get("gpu_name", "")).strip()
+gpu_name_row = ""
+if gpu_name:
+    gpu_name_row = '''
+<tr>
+<td><b>GPU Name</b></td><td>''' + gpu_name + '''</td></tr>'''
+
+gpu_driver_version = str(system_info.get("gpu_driver_version", "")).strip()
+gpu_driver_version_row = ""
+if gpu_driver_version:
+    gpu_driver_version_row = '''
+<tr>
+<td><b>GPU Driver Version</b></td><td>''' + gpu_driver_version + '''</td></tr>'''
+
 summary_html = '''
 <table class="summaryTable">
 <tbody>
@@ -356,7 +373,7 @@ summary_html = '''
 <tr>
 <td width="100px"><b>CPU</b></td><td>''' + str(system_info["cpu"]) + '''</td></tr>
 <tr>
-<td><b>GPU</b></td><td>''' + str(system_info["gpu"]) + '''</td></tr>
+<td><b>GPU</b></td><td>''' + str(system_info["gpu"]) + '''</td></tr>''' + gpu_name_row + gpu_driver_version_row + '''
 <tr>
 <td><b>Display</b></td><td>''' + str(system_info["display"]) + '''</td></tr>
 <tr>
