@@ -32,7 +32,7 @@
 	Optional explicit output folder name. Defaults to '<BenchmarkTitle>-yyyyMMdd_HHmmss'.
 
 .PARAMETER InstallDeps
-	Run 'pip install pandas plotly chart_studio' if the analysis dependencies are missing.
+	Run 'pip install pandas plotly chart_studio matplotlib' if the analysis dependencies are missing.
 
 .PARAMETER SummaryOutput
 	Optional path (relative to the repo root) of the combined HTML results summary generated after
@@ -70,7 +70,7 @@ param(
 	[string] $BenchmarkTitle = 'oidn_resolution_sweep',
 	[string] $RunId = '',
 	[string] $SummaryOutput = '',
-	[int] $BenchmarkTimeoutSec = 120,
+	[int] $BenchmarkTimeoutSec = 60,
 
 	[switch] $InstallDeps,
 	[switch] $SkipCapture,
@@ -140,16 +140,29 @@ try {
 	}
 
 	if (-not $SkipAnalysis) {
-		& python -c "import pandas, plotly, chart_studio" *> $null
+		$analysisDeps = @('pandas', 'plotly', 'chart_studio', 'matplotlib')
+		$analysisImportList = ($analysisDeps -join ', ')
+		# Probe analysis deps without letting NativeCommandError terminate the script
+		# when $ErrorActionPreference='Stop'. We handle the result via $LASTEXITCODE.
+		$oldEap = $ErrorActionPreference
+		try {
+			$ErrorActionPreference = 'Continue'
+			& python -c "import $analysisImportList" *> $null
+		}
+		finally {
+			$ErrorActionPreference = $oldEap
+		}
 		if ($LASTEXITCODE -ne 0) {
 			if ($InstallDeps) {
 				Write-Host "Installing Python analysis dependencies..." -ForegroundColor Yellow
-				& python -m pip install pandas plotly chart_studio
+				& python -m pip install @analysisDeps
 				if ($LASTEXITCODE -ne 0) { throw "Failed to install analysis dependencies." }
 			}
 			else {
-				throw "Missing Python analysis deps (pandas/plotly/chart_studio). " +
-					  "Re-run with -InstallDeps, or 'pip install pandas plotly chart_studio'."
+				$depsText = ($analysisDeps -join '/')
+				$depsCmd = ($analysisDeps -join ' ')
+				throw "Missing Python analysis deps ($depsText). " +
+					  "Re-run with -InstallDeps, or 'pip install $depsCmd'."
 			}
 		}
 	}
