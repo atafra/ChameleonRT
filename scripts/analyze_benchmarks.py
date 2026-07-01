@@ -215,6 +215,7 @@ for benchmark_dir in benchmark_root_dir.iterdir():
 plot_files = []
 mean_files = []
 data_counts = []
+plot_warnings = []
 color_sequence = px.colors.qualitative.Dark24
 
 for plot_dir in plot_subset:
@@ -257,21 +258,29 @@ for plot_idx, report_plot in enumerate(report_config["generate_plots"]):
 
     elif report_plot["plot_type"] == "relative":
         if report_plot["baseline"] not in benchmark_name_LUT:
-            print(f"Relative plot : Skipping chart for {col_name} because baseline '{report_plot['baseline']}' is missing")
+            warning = f"Relative plot '{display_name}' skipped because baseline '{report_plot['baseline']}' is missing."
+            print("Relative plot : " + warning)
+            plot_warnings.append(warning)
             continue
         baseline_col_idx = benchmark_name_LUT[report_plot["baseline"]]
 
         if benchmark_dataframes[baseline_col_idx] is None:
-            print(f"Relative plot : Skipping chart for {col_name} because baseline '{report_plot['baseline']}' has no data")
+            warning = f"Relative plot '{display_name}' skipped because baseline '{report_plot['baseline']}' has no data."
+            print("Relative plot : " + warning)
+            plot_warnings.append(warning)
             continue
 
         try:
             baseline_col = benchmark_dataframes[baseline_col_idx][col_name]
         except KeyError as e:
-            print(f"Relative plot : Skipping chart for {col_name} due to missing column: {e}")
+            warning = f"Relative plot '{display_name}' skipped because baseline column '{col_name}' is missing: {e}."
+            print("Relative plot : " + warning)
+            plot_warnings.append(warning)
             continue
         except Exception as e:
-            print(f"Relative plot : An error occurred while processing {col_name}: {e}")
+            warning = f"Relative plot '{display_name}' skipped because processing failed: {e}."
+            print("Relative plot : " + warning)
+            plot_warnings.append(warning)
             continue
 
         baseline_ewm = baseline_col.ewm(span = smoothing_window_size, adjust=False).mean()
@@ -405,6 +414,18 @@ if failed_benchmarks:
         )
     failed_benchmark_html += '''
 </tbody></table>
+</div>'''
+
+plot_warning_html = ""
+if plot_warnings:
+    plot_warning_html = '''
+<div class="alert alert-warning" role="alert">
+<h4>Report warnings</h4>
+<ul>'''
+    for warning in plot_warnings:
+        plot_warning_html += "<li>" + html.escape(warning) + "</li>"
+    plot_warning_html += '''
+</ul>
 </div>'''
 
 binary_warning_html = ""
@@ -577,6 +598,8 @@ html_string = '''
             ''' + binary_warning_html + '''
 
             ''' + failed_benchmark_html + '''
+
+            ''' + plot_warning_html + '''
 
             ''' + summary_html + '''
 

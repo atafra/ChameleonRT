@@ -191,8 +191,11 @@ def load_backend(label, data_dir, ignore_frames):
 
 
 def extract_env(backend):
-    base = backend.get("baseline")
-    bj = base["benchmark_json"] if base else {}
+    env_variant = next(
+        (v for v in backend.get("variants", []) if v.get("benchmark_json")),
+        backend.get("baseline"),
+    )
+    bj = env_variant["benchmark_json"] if env_variant else {}
     launch = bj.get("launch", {})
     system = bj.get("system", {})
     res = launch.get("render_res") or launch.get("display_res")
@@ -204,7 +207,7 @@ def extract_env(backend):
         if str(tok).lower().endswith((".obj", ".gltf", ".glb")):
             scene = Path(str(tok)).stem
             break
-    frames = base["total_frames"] if base else None
+    frames = env_variant["total_frames"] if env_variant else None
     return res_str, scene, system, frames
 
 
@@ -317,6 +320,7 @@ def render_backend_section(backend, output_dir):
         rows.append(
             f'<tr class="{ "baseline" if is_base else "failed" if failed else "" }">'
             f'<td><div class="variant"><code>{html.escape(v["name"])}</code>{badge}</div>{failure_html}</td>'
+            f'<td>{html.escape(v.get("status", "completed"))}</td>'
             f'<td class="num app">{bar}<span>{fmt_ms(app)}</span></td>'
             f'<td class="num">{delta_html}</td>'
             f'<td class="num">{fmt_attributed_ms(v["name"], "denoise_time_ms", v["means"].get("denoise_time_ms"))}</td>'
@@ -338,7 +342,7 @@ def render_backend_section(backend, output_dir):
     return (
         f'<section class="backend"><h2>{label}{baseval}</h2>'
         f'<table><thead><tr>'
-        f'<th>Variant</th><th>app_time_ms</th><th>vs baseline</th>'
+        f'<th>Variant</th><th>Status</th><th>app_time_ms</th><th>vs baseline</th>'
         f'<th>denoise_time_ms</th><th>render_time_ms</th>'
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
         f'{warning_note}'

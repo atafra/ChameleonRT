@@ -21,6 +21,7 @@ import shutil
 import sys
 import os
 import shlex
+import signal
 import time
 from pathlib import Path
 from datetime import datetime, timezone
@@ -77,7 +78,10 @@ def kill_process_tree(proc):
             check=False,
         )
     else:
-        proc.kill()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            proc.kill()
 
 
 def clean_stale_artifacts():
@@ -95,6 +99,12 @@ def make_process_args(executable_path, cmd_line):
     if os.name == "nt":
         return str(executable_path) + cmd_line
     return [str(executable_path)] + shlex.split(cmd_line)
+
+
+def make_popen_kwargs():
+    if os.name == "nt":
+        return {}
+    return {"start_new_session": True}
 
 
 for i in range(len(benchmark_variants)):
@@ -152,7 +162,12 @@ for i in range(len(benchmark_variants)):
     with open(process_log_path, "w", encoding="utf-8", errors="replace") as process_log:
         process_log.write(cmd + "\n\n")
         process_log.flush()
-        proc = subprocess.Popen(process_args, stdout=process_log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(
+            process_args,
+            stdout=process_log,
+            stderr=subprocess.STDOUT,
+            **make_popen_kwargs(),
+        )
         try:
             exit_code = proc.wait(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
