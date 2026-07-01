@@ -1,8 +1,9 @@
 # OIDN Synchronization Mode Benchmark Plan (Vulkan + DXR)
 
 Compare the performance of ChameleonRT's **OIDN interop / synchronization modes** on the
-**Vulkan** and **DXR** backends at a fixed **1920x1080** resolution, using the Sponza test
-scene, then produce **separate HTML analysis reports per backend**.
+**Vulkan** and **DXR** backends across a **720p / 1080p / 1440p** resolution sweep,
+using the Sponza test scene, then produce **separate HTML analysis reports per
+backend/resolution** and one combined summary.
 
 ---
 
@@ -28,7 +29,7 @@ Use ChameleonRT's own scripts, driven from the repository root:
 | Backend plugins present | `crt_vulkan.dll`, `crt_dxr.dll` |
 | OIDN runtime present next to exe | `OpenImageDenoise*.dll`, `sycl8.dll`, `ur_*.dll`, `SDL2.dll` |
 | Scene | `./Assets/Sponza/sponza.obj` |
-| Resolution | `1920 x 1080` (`-img 1920 1080`) |
+| Resolutions | `1280 x 720`, `1920 x 1080`, `2560 x 1440` (`-img <w> <h>`) |
 | Frames per variant | `200` (implicit default via `-profiling`, `-profiling-fps 1`) |
 
 **Prerequisites**
@@ -82,11 +83,12 @@ benchmarks/
 │  ├─ report_oidn_vulkan.json
 │  └─ report_oidn_dxr.json
 ├─ data/
-│  ├─ oidn_vulkan/                  # per-variant benchmark.csv/json + scene_info.json
+│  ├─ oidn_vulkan/                  # 720p/1080p/1440p subdirs, each with per-variant data
 │  └─ oidn_dxr/
 └─ reports/
-   ├─ oidn_vulkan/                  # HTML analysis report (Vulkan)
-   └─ oidn_dxr/                     # HTML analysis report (DXR)
+	  ├─ oidn_vulkan/                  # 720p/1080p/1440p detail reports
+   ├─ oidn_dxr/
+   └─ oidn_summary.html             # combined resolution-sweep summary
 ```
 
 ---
@@ -112,7 +114,7 @@ Configs are authored to be as reproducible as possible across machines/platforms
 ### `benchmarks/configs/capture_oidn_vulkan.json`
 ```json
 {
-	"title": "OIDN Sync Modes - Vulkan (Sponza, 1080p)",
+	"title": "OIDN Sync Modes - Vulkan (Sponza)",
 	"crt_working_dir": ".",
 	"crt_executable_rel_path": "build/vs/Release/chameleonrt.exe",
 	"shared_benchmark_cmd_prefix": " vulkan ./Assets/Sponza/sponza.obj -img 1920 1080",
@@ -128,7 +130,7 @@ Configs are authored to be as reproducible as possible across machines/platforms
 ### `benchmarks/configs/capture_oidn_dxr.json`
 ```json
 {
-	"title": "OIDN Sync Modes - DXR (Sponza, 1080p)",
+	"title": "OIDN Sync Modes - DXR (Sponza)",
 	"crt_working_dir": ".",
 	"crt_executable_rel_path": "build/vs/Release/chameleonrt.exe",
 	"shared_benchmark_cmd_prefix": " dxr ./Assets/Sponza/sponza.obj -img 1920 1080",
@@ -143,8 +145,8 @@ Configs are authored to be as reproducible as possible across machines/platforms
 ### `benchmarks/configs/report_oidn_vulkan.json`
 ```json
 {
-	"title": "OIDN Synchronization Modes - Vulkan (Sponza, 1080p)",
-	"description": "Comparison of OIDN interop/synchronization modes on the Vulkan backend at 1920x1080.",
+	"title": "OIDN Synchronization Modes - Vulkan (Sponza)",
+	"description": "Comparison of OIDN interop/synchronization modes on the Vulkan backend.",
 	"ignore_frames": 20,
 	"smoothing_window_size": 5,
 	"generate_plots": [
@@ -159,8 +161,8 @@ Configs are authored to be as reproducible as possible across machines/platforms
 ### `benchmarks/configs/report_oidn_dxr.json`
 ```json
 {
-	"title": "OIDN Synchronization Modes - DXR (Sponza, 1080p)",
-	"description": "Comparison of OIDN interop/synchronization modes on the DXR backend at 1920x1080.",
+	"title": "OIDN Synchronization Modes - DXR (Sponza)",
+	"description": "Comparison of OIDN interop/synchronization modes on the DXR backend.",
 	"ignore_frames": 20,
 	"smoothing_window_size": 5,
 	"generate_plots": [
@@ -182,11 +184,9 @@ Configs are authored to be as reproducible as possible across machines/platforms
 1. **Verify environment** — confirm `chameleonrt.exe`, Sponza, oneAPI runtime on `PATH`, and Python deps.
 2. **Probe supported modes** — 1-frame run per candidate (`-benchmark-frames 1`); keep only modes that exit 0. Also confirms the DXR backend initializes.
 3. **Author configs** — write the four JSON files above under `benchmarks/configs/` (trim any unsupported variants found in step 2).
-4. **Capture Vulkan** — `capture_benchmarks.py capture_oidn_vulkan.json benchmarks/data/oidn_vulkan`.
-5. **Capture DXR** — `capture_benchmarks.py capture_oidn_dxr.json benchmarks/data/oidn_dxr`.
-6. **Analyze Vulkan** — `analyze_benchmarks.py report_oidn_vulkan.json benchmarks/data/oidn_vulkan benchmarks/reports/oidn_vulkan`.
-7. **Analyze DXR** — `analyze_benchmarks.py report_oidn_dxr.json benchmarks/data/oidn_dxr benchmarks/reports/oidn_dxr`.
-8. **Verify & summarize** — confirm CSV/JSON per variant, `scene_info.json`, and each backend's HTML report; summarize mean `app_time_ms` / `denoise_time_ms` and the relative deltas vs `host_blocking`.
+4. **Capture each resolution** — the runner injects `-img 1280 720`, `-img 1920 1080`, and `-img 2560 1440` into temporary configs for each backend.
+5. **Analyze each backend/resolution** — per-resolution reports are written below `benchmarks/reports/oidn_<backend>/<resolution>/`.
+6. **Verify & summarize** — confirm CSV/JSON per variant, `scene_info.json`, and each backend/resolution HTML report; summarize mean `app_time_ms` / `denoise_time_ms` and the relative deltas vs `host_blocking` in one combined summary.
 
 ---
 
@@ -210,6 +210,7 @@ Useful switches:
 
 ```powershell
 .\benchmarks\run_oidn_benchmarks.ps1 -Backends vulkan            # single backend
+.\benchmarks\run_oidn_benchmarks.ps1 -Resolutions 1080p          # single resolution
 .\benchmarks\run_oidn_benchmarks.ps1 -InstallDeps                # pip install analysis deps if missing
 .\benchmarks\run_oidn_benchmarks.ps1 -SkipCapture                # re-generate reports from existing data
 .\benchmarks\run_oidn_benchmarks.ps1 -OneApiBin "D:\path\to\oneAPI\compiler\latest\bin"
@@ -231,13 +232,11 @@ $env:PATH = "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin;$env:PATH"
 # timings are representative (no effect on DXR).
 $env:VK_LOADER_LAYERS_DISABLE = "VK_LAYER_KHRONOS_validation"
 
-# Capture
-python scripts\capture_benchmarks.py benchmarks\configs\capture_oidn_vulkan.json benchmarks\data\oidn_vulkan
-python scripts\capture_benchmarks.py benchmarks\configs\capture_oidn_dxr.json    benchmarks\data\oidn_dxr
-
-# Analyze (separate report per backend)
-python scripts\analyze_benchmarks.py benchmarks\configs\report_oidn_vulkan.json benchmarks\data\oidn_vulkan benchmarks\reports\oidn_vulkan
-python scripts\analyze_benchmarks.py benchmarks\configs\report_oidn_dxr.json    benchmarks\data\oidn_dxr    benchmarks\reports\oidn_dxr
+# Capture/analyze manually by copying the checked-in configs, editing
+# shared_benchmark_cmd_prefix to the desired -img width/height, then writing each
+# output into benchmarks\data\oidn_<backend>\<resolution> and
+# benchmarks\reports\oidn_<backend>\<resolution>. The one-shot runner automates
+# this for 720p, 1080p, and 1440p.
 ```
 
 ---
@@ -262,24 +261,28 @@ generated automatically as a standalone, aesthetic HTML summary after the per-ba
 reports:
 
 - **Summary:** `benchmarks/reports/oidn_summary.html`
-- **Per-backend detail:** `benchmarks/reports/oidn_vulkan/benchmark_report.html`,
-  `benchmarks/reports/oidn_dxr/benchmark_report.html`
+- **Per-backend/resolution detail:** `benchmarks/reports/oidn_vulkan/<resolution>/benchmark_report.html`,
+  `benchmarks/reports/oidn_dxr/<resolution>/benchmark_report.html`
 
 The summary is produced by `scripts/summarize_benchmarks.py` (Python standard library
 only, so it runs even without the analysis dependencies) and is invoked automatically by
 `run_oidn_benchmarks.ps1`. It mirrors the previous static table layout: an intro line, a
-per-backend section (with the `host_blocking` baseline `app_time_ms`) and a
+per-backend/resolution section (with the `host_blocking` baseline `app_time_ms`) and a
 `Variant / app_time_ms / vs baseline / denoise_time_ms / render_time_ms` table, followed
 by data-driven Takeaways. Means are computed per variant after discarding the first
 `ignore_frames` frames (from the report config), with the `baseline*` variant used as the
-per-backend baseline for the "vs baseline" column.
+per-backend/resolution baseline for the "vs baseline" column.
 
 To regenerate the summary on its own from existing capture data:
 
 ```powershell
 python scripts\summarize_benchmarks.py --output benchmarks\reports\oidn_summary.html --ignore-frames 20 `
-    --backend Vulkan benchmarks\data\oidn_vulkan `
-    --backend DXR    benchmarks\data\oidn_dxr
+	--backend "Vulkan 720p"  benchmarks\data\oidn_vulkan\720p `
+	--backend "Vulkan 1080p" benchmarks\data\oidn_vulkan\1080p `
+	--backend "Vulkan 1440p" benchmarks\data\oidn_vulkan\1440p `
+	--backend "DXR 720p"     benchmarks\data\oidn_dxr\720p `
+	--backend "DXR 1080p"    benchmarks\data\oidn_dxr\1080p `
+	--backend "DXR 1440p"    benchmarks\data\oidn_dxr\1440p
 ```
 
 > Absolute Vulkan numbers are only representative when the externally-injected validation

@@ -1,5 +1,5 @@
 {
-    "title": "OIDN Sync Modes - Vulkan (Sponza, 1080p)",
+    "title": "OIDN Sync Modes - Vulkan (Sponza)",
     "crt_working_dir": ".",
     "crt_executable_rel_path": "build/vs/Release/chameleonrt.exe",
     "shared_benchmark_cmd_prefix": " vulkan ./Assets/Sponza/sponza.obj -img 1920 1080",

@@ -1,6 +1,6 @@
 {
-    "title": "OIDN Synchronization Modes - DXR (Sponza, 1080p)",
-    "description": "Comparison of OIDN interop/synchronization modes on the DXR backend at 1920x1080.",
+    "title": "OIDN Synchronization Modes - DXR (Sponza)",
+    "description": "Comparison of OIDN interop/synchronization modes on the DXR backend.",
     "ignore_frames": 20,
     "smoothing_window_size": 5,
     "generate_plots": [

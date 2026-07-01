@@ -49,7 +49,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.5;
 }
-.container { max-width: 960px; margin: 0 auto; }
+.container { max-width: 1120px; margin: 0 auto; }
 header.report { margin-bottom: 1.75rem; }
 h1 { font-size: 1.65rem; margin: 0 0 .35rem; letter-spacing: .2px; }
 .subtitle { color: var(--muted); font-size: .95rem; margin: 0; }
@@ -206,7 +206,7 @@ def derive_report_link(data_dir, output_dir):
     p = Path(data_dir).resolve()
     parts = list(p.parts)
     if "data" in parts:
-        idx = len(parts) - 1 - parts[::-1].index("data")
+        idx = parts.index("data")
         parts[idx] = "reports"
         candidate = Path(*parts) / "benchmark_report.html"
         if candidate.is_file():
@@ -334,16 +334,19 @@ def build_takeaways(backends):
 
 
 def generate_html(backends, args, output_dir):
-    scene = res = system = frames = None
+    scene = system = frames = None
+    resolutions = []
     for b in backends:
         r, s, sysinfo, fr = extract_env(b)
         scene = scene or (args.scene or s)
-        res = res or r
         frames = frames or fr
+        if r and r not in resolutions:
+            resolutions.append(r)
         if system is None and sysinfo:
             system = sysinfo
 
-    header_bits = [x for x in (scene, res,
+    res_label = ", ".join(resolutions) if resolutions else None
+    header_bits = [x for x in (scene, res_label,
                                f"{frames} frames" if frames else None,
                                f"first {args.ignore_frames} ignored" if args.ignore_frames else None)
                    if x]
@@ -373,7 +376,7 @@ def generate_html(backends, args, output_dir):
     intro = (
         "Mean per-frame times; percentage is total frame time "
         "(<code>app_time_ms</code>) relative to the <code>host_blocking</code> "
-        "baseline of the same backend (negative = faster)."
+        "baseline for the same backend and resolution (negative = faster)."
     )
 
     return f"""<!DOCTYPE html>

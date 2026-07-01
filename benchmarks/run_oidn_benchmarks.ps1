@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 	One-shot capture + analysis of ChameleonRT OIDN synchronization-mode benchmarks
-	(Vulkan and DXR) at a fixed resolution using the Sponza scene.
+	(Vulkan and DXR) across a resolution sweep using the Sponza scene.
 
 .DESCRIPTION
 	Reproduces the benchmark described in benchmarks/OIDN_SYNC_BENCHMARK_PLAN.md on a
@@ -10,7 +10,7 @@
 	  * verifies prerequisites (executable, scene, Python + analysis deps),
 	  * prepends the Intel oneAPI runtime to PATH (needed by the OIDN SYCL device),
 	  * disables externally-injected Vulkan validation layers for representative timings,
-	  * runs capture_benchmarks.py then analyze_benchmarks.py for each backend.
+	  * runs capture_benchmarks.py then analyze_benchmarks.py for each backend and resolution.
 
 	All work paths are resolved relative to the repo root and the capture configs, so only
 	-OneApiBin (and the 'crt_executable_rel_path' inside the capture configs) is
@@ -21,6 +21,9 @@
 
 .PARAMETER OneApiBin
 	Path to the Intel oneAPI compiler 'bin' directory containing the OIDN SYCL runtime DLLs.
+
+.PARAMETER Resolutions
+	Which resolutions to run. Default: 720p, 1080p, 1440p.
 
 .PARAMETER InstallDeps
 	Run 'pip install pandas plotly chart_studio' if the analysis dependencies are missing.
@@ -50,6 +53,9 @@ param(
 	[string[]] $Backends = @('vulkan', 'dxr'),
 
 	[string] $OneApiBin = 'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin',
+
+	[ValidateSet('720p', '1080p', '1440p')]
+	[string[]] $Resolutions = @('720p', '1080p', '1440p'),
 
 	[string] $SummaryOutput = 'benchmarks/reports/oidn_summary.html',
 
@@ -89,6 +95,15 @@ try {
 		}
 	}
 
+	$resolutionTable = [ordered]@{
+		'720p'  = @{ Width = 1280; Height = 720;  Label = '720p' }
+		'1080p' = @{ Width = 1920; Height = 1080; Label = '1080p' }
+		'1440p' = @{ Width = 2560; Height = 1440; Label = '1440p' }
+	}
+
+	$tempConfigDir = Join-Path ([System.IO.Path]::GetTempPath()) 'chameleonrt_oidn_benchmarks'
+	New-Item -ItemType Directory -Force -Path $tempConfigDir | Out-Null
+
 	# Accumulates '<Label> <data-dir>' pairs for the combined HTML summary generated
 	# after all backends have been processed.
 	$summaryBackendArgs = @()
@@ -126,7 +141,7 @@ try {
 		Write-Warning "oneAPI bin not found at '$OneApiBin'. If OIDN fails to initialize, pass -OneApiBin <path>."
 	}
 
-	# --- Run each backend ----------------------------------------------------
+	# --- Run each backend/resolution -----------------------------------------
 	foreach ($name in $Backends) {
 		$job = $allJobs[$name]
 		Write-Host "`n=== Backend: $name ===" -ForegroundColor Green
@@ -140,36 +155,59 @@ try {
 				  "Edit 'crt_executable_rel_path' in the config for your build tree."
 		}
 
-		if (-not $SkipCapture) {
-			# Disable externally-injected Vulkan validation layers for representative timings
-			# (no effect on DXR). The app itself never enables them.
-			if ($job.DisableVulkanValidation) {
-				$env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_KHRONOS_validation'
+		foreach ($resName in $Resolutions) {
+			$res = $resolutionTable[$resName]
+			$resLabel = $res.Label
+			$resData = Join-Path $job.Data $resName
+			$resReports = Join-Path $job.Reports $resName
+			$resTitle = "OIDN Synchronization Modes - $($job.Label) (Sponza, $resLabel)"
+			$resDesc = "Comparison of OIDN interop/synchronization modes on the $($job.Label) backend at $($res.Width)x$($res.Height)."
+
+			$captureCfg = Get-Content $job.Capture -Raw | ConvertFrom-Json
+			$captureCfg.title = "OIDN Sync Modes - $($job.Label) (Sponza, $resLabel)"
+			$captureCfg.shared_benchmark_cmd_prefix = " $name ./Assets/Sponza/sponza.obj -img $($res.Width) $($res.Height)"
+			$captureCfgPath = Join-Path $tempConfigDir "capture_oidn_${name}_${resName}.json"
+			$captureCfg | ConvertTo-Json -Depth 20 | Set-Content -Encoding ASCII $captureCfgPath
+
+			$reportCfg = Get-Content $job.Report -Raw | ConvertFrom-Json
+			$reportCfg.title = $resTitle
+			$reportCfg.description = $resDesc
+			$reportCfgPath = Join-Path $tempConfigDir "report_oidn_${name}_${resName}.json"
+			$reportCfg | ConvertTo-Json -Depth 20 | Set-Content -Encoding ASCII $reportCfgPath
+
+			Write-Host "`n--- Resolution: $resLabel ($($res.Width)x$($res.Height)) ---" -ForegroundColor DarkCyan
+
+			if (-not $SkipCapture) {
+				# Disable externally-injected Vulkan validation layers for representative timings
+				# (no effect on DXR). The app itself never enables them.
+				if ($job.DisableVulkanValidation) {
+					$env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_KHRONOS_validation'
+				}
+				else {
+					Remove-Item Env:VK_LOADER_LAYERS_DISABLE -ErrorAction SilentlyContinue
+				}
+
+				Write-Host "Capturing -> $resData" -ForegroundColor Cyan
+				& python scripts\capture_benchmarks.py $captureCfgPath $resData
+				if ($LASTEXITCODE -ne 0) { throw "Capture failed for backend '$name' at '$resName' (exit $LASTEXITCODE)." }
 			}
-			else {
-				Remove-Item Env:VK_LOADER_LAYERS_DISABLE -ErrorAction SilentlyContinue
+
+			if (-not $SkipAnalysis) {
+				if (-not (Test-Path $resData)) {
+					throw "No existing data at '$resData' to analyze. Run without -SkipCapture first."
+				}
+				Write-Host "Analyzing -> $resReports" -ForegroundColor Cyan
+				& python scripts\analyze_benchmarks.py $reportCfgPath $resData $resReports
+				if ($LASTEXITCODE -ne 0) { throw "Analysis failed for backend '$name' at '$resName' (exit $LASTEXITCODE)." }
+
+				$reportHtml = Join-Path $RepoRoot (Join-Path $resReports 'benchmark_report.html')
+				Write-Host "Report: $reportHtml" -ForegroundColor Green
 			}
 
-			Write-Host "Capturing -> $($job.Data)" -ForegroundColor Cyan
-			& python scripts\capture_benchmarks.py $job.Capture $job.Data
-			if ($LASTEXITCODE -ne 0) { throw "Capture failed for backend '$name' (exit $LASTEXITCODE)." }
-		}
-
-		if (-not $SkipAnalysis) {
-			if (-not (Test-Path $job.Data)) {
-				throw "No existing data at '$($job.Data)' to analyze. Run without -SkipCapture first."
+			# Include this backend/resolution in the combined summary if it has capture data.
+			if (Test-Path $resData) {
+				$summaryBackendArgs += @('--backend', "$($job.Label) $resLabel", $resData)
 			}
-			Write-Host "Analyzing -> $($job.Reports)" -ForegroundColor Cyan
-			& python scripts\analyze_benchmarks.py $job.Report $job.Data $job.Reports
-			if ($LASTEXITCODE -ne 0) { throw "Analysis failed for backend '$name' (exit $LASTEXITCODE)." }
-
-			$reportHtml = Join-Path $RepoRoot (Join-Path $job.Reports 'benchmark_report.html')
-			Write-Host "Report: $reportHtml" -ForegroundColor Green
-		}
-
-		# Include this backend in the combined summary if it has capture data.
-		if (Test-Path $job.Data) {
-			$summaryBackendArgs += @('--backend', $job.Label, $job.Data)
 		}
 	}
 
@@ -189,7 +227,7 @@ try {
 		}
 
 		Write-Host "`nGenerating combined summary -> $SummaryOutput" -ForegroundColor Cyan
-		& python scripts\summarize_benchmarks.py --output $SummaryOutput --ignore-frames $ignoreFrames @summaryBackendArgs
+		& python scripts\summarize_benchmarks.py --output $SummaryOutput --ignore-frames $ignoreFrames --title 'OIDN Synchronization Modes - Resolution Sweep' @summaryBackendArgs
 		if ($LASTEXITCODE -ne 0) { throw "Summary generation failed (exit $LASTEXITCODE)." }
 		Write-Host "Summary: $(Join-Path $RepoRoot $SummaryOutput)" -ForegroundColor Green
 	}
