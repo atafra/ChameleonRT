@@ -252,10 +252,16 @@ def derive_report_link(data_dir, output_dir):
 
 
 def fastest_variant(backend):
-    base = backend.get("baseline")
+    """Return the genuinely fastest completed variant, including the baseline.
+
+    The baseline must take part in the comparison; otherwise the fastest
+    alternative gets reported as the "fastest" even when the baseline actually
+    has the lowest app_time_ms. Returns None when no completed variant has a
+    timing.
+    """
     cands = [
         v for v in backend["variants"]
-        if v is not base and v.get("status") == "completed" and v["means"].get("app_time_ms") is not None
+        if v.get("status") == "completed" and v["means"].get("app_time_ms") is not None
     ]
     if not cands:
         return None
@@ -305,7 +311,7 @@ def render_backend_section(backend, output_dir):
             badge = '<span class="badge base">baseline</span>'
         if failed:
             badge += f'<span class="badge failed">{html.escape(v.get("status", "failed"))}</span>'
-        elif fastest is not None and v is fastest:
+        elif fastest is not None and v is fastest and not is_base:
             badge = '<span class="badge best">fastest</span>'
 
         bar = ""
@@ -353,6 +359,7 @@ def render_backend_section(backend, output_dir):
 def build_takeaways(backends):
     bullets = []
     deltas = []
+    baseline_won_any = False
     for b in backends:
         base = b.get("baseline")
         if not base:
@@ -360,6 +367,16 @@ def build_takeaways(backends):
         base_app = base["means"].get("app_time_ms")
         fastest = fastest_variant(b)
         if fastest is None or not base_app:
+            continue
+        # When the baseline itself has the lowest app_time_ms, no synchronization
+        # mode actually beat it -- say so instead of promoting a slower variant.
+        if fastest is base:
+            baseline_won_any = True
+            bullets.append(
+                f'<strong>{html.escape(b["label"])}</strong>: baseline '
+                f'<code>{html.escape(base["name"])}</code> is fastest at '
+                f'{base_app:.2f} ms; no synchronization mode beat it.'
+            )
             continue
         d = delta_pct(fastest["means"]["app_time_ms"], base_app)
         deltas.append(d)
@@ -374,7 +391,7 @@ def build_takeaways(backends):
             f'{fastest["means"]["app_time_ms"]:.2f} ms ({d:+.1f}% vs '
             f'<code>{html.escape(base["name"])}</code>{dn_txt}).'
         )
-    if bullets and deltas and all(d is not None and d < 0 for d in deltas):
+    if bullets and deltas and not baseline_won_any and all(d is not None and d < 0 for d in deltas):
         bullets.insert(
             0,
             "GPU-side interop modes reduce total frame time versus host-blocking on "
