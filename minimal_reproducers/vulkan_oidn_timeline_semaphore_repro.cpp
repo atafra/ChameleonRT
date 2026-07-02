@@ -1,32 +1,27 @@
-// Minimal Vulkan/OIDN timeline semaphore reproducer for RenderVulkan-style hangs.
+// Minimal Vulkan/SYCL timeline semaphore reproducer for RenderVulkan-style hangs.
 //
-// This intentionally mirrors the synchronization/submission ordering in
-// backends/vulkan/render_vulkan.cpp for OIDNInteropMode::TimelineSemaphore:
+// Sequence:
+//   Vulkan queue: submit cmd0 with external buffer release barriers and signal
+//                 timeline semaphore value N
+//   SYCL queue:   wait_external_semaphore(N)
+//                 run a dummy kernel over imported Vulkan external buffers
+//                 signal_external_semaphore(N+1)
+//   Vulkan queue: submit cmd1 with external buffer acquire barriers, wait
+//                 timeline semaphore value N+1, signal VkFence
+//   CPU:          wait for VkFence with timeout
 //
-//   Vulkan queue: render_cmd_buf submission signals timeline semaphore value N
-//   OIDN/SYCL:    waitSemaphoreAsync(sem, N)
-//                 executeAsync()
-//                 signalSemaphoreAsync(sem, N+1)
-//   Vulkan queue: tonemap_cmd_buf submission waits timeline semaphore value N+1
-//                 and signals a CPU-visible VkFence
-//   CPU:          waits for the VkFence with a timeout
+// This intentionally avoids OIDN while preserving the Vulkan <-> SYCL interop
+// ingredients used by OIDN: Level Zero, imported Vulkan timeline semaphore,
+// imported Vulkan external memory, and an asynchronous non-immediate SYCL queue.
 //
-// The command buffers contain only timestamp writes and the same external
-// queue-family release/acquire barriers used by RenderVulkan around OIDN.  The
-// OIDN filter is real and uses externally exported Vulkan buffers, so the
-// semaphore path exercises the same Vulkan <-> OIDN/SYCL interop mechanism as
-// the backend without needing a scene, ray tracing pipeline, or shaders.
-//
-// Windows build example:
-//   cd minimal_reproducers
-//   cl /std:c++14 /EHsc /I%VULKAN_SDK%\Include /I<OIDN include dir> ^
-//      vulkan_oidn_timeline_semaphore_repro.cpp ^
-//      /link /LIBPATH:%VULKAN_SDK%\Lib vulkan-1.lib OpenImageDenoise.lib
-//
-// Linux build example:
-//   cd minimal_reproducers
-//   c++ -std=c++14 -O2 vulkan_oidn_timeline_semaphore_repro.cpp \
-//       -I$VULKAN_SDK/include -lOpenImageDenoise -lvulkan -o repro
+// Windows build example using the staged DPC++ runtime from the ChameleonRT build:
+//   cd build\vs
+//   call "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
+//   .\dpcpp\src\bin\clang++.exe -fsycl -std=c++17 -O2 ^
+//      -I%VULKAN_SDK%\Include ^
+//      ..\..\minimal_reproducers\vulkan_oidn_timeline_semaphore_repro.cpp ^
+//      -o vulkan_oidn_timeline_semaphore_repro.exe ^
+//      -L%VULKAN_SDK%\Lib -lvulkan-1
 
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -36,37 +31,33 @@
 #include <unistd.h>
 #endif
 
-#include <OpenImageDenoise/oidn.hpp>
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wignored-attributes"
+#endif
 #include <vulkan/vulkan.h>
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+#include <sycl/detail/core.hpp>
+#include <sycl/ext/oneapi/bindless_images.hpp>
+#include <sycl/properties/queue_properties.hpp>
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
-#include <string>
 #include <vector>
+
+namespace syclexp = sycl::ext::oneapi::experimental;
 
 namespace {
 
-static const uint32_t kWidth = 64;
-static const uint32_t kHeight = 64;
 static const uint64_t kWaitTimeoutNs = 10ull * 1000ull * 1000ull * 1000ull;
-static const uint32_t kMaxFramesInFlight = 2;
-
-// Match RenderVulkan's timing query layout exactly.
-enum TimingQuery {
-    TIMING_QUERY_FRAME_BEGIN = 0,
-    TIMING_QUERY_RAYTRACING_BEGIN,
-    TIMING_QUERY_RAYTRACING_END,
-    TIMING_QUERY_DENOISE_BEGIN,
-    TIMING_QUERY_TONEMAP_BEGIN,
-    TIMING_QUERY_FRAME_END,
-    TIMING_QUERY_COUNT
-};
 
 #ifdef _WIN32
 static const VkExternalSemaphoreHandleTypeFlagBits kExternalSemaphoreHandleType =
@@ -80,29 +71,50 @@ static const VkExternalMemoryHandleTypeFlagBits kExternalMemoryHandleType =
     VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 #endif
 
+static const size_t kExternalBufferSize = 4ull * 1024ull * 1024ull;
+
 const char *vk_result_string(VkResult r)
 {
     switch (r) {
     case VK_SUCCESS: return "VK_SUCCESS";
-    case VK_NOT_READY: return "VK_NOT_READY";
     case VK_TIMEOUT: return "VK_TIMEOUT";
-    case VK_EVENT_SET: return "VK_EVENT_SET";
-    case VK_EVENT_RESET: return "VK_EVENT_RESET";
-    case VK_INCOMPLETE: return "VK_INCOMPLETE";
-    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
     case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-    case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
     case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
     case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-    case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
     default: return "<unknown VkResult>";
     }
+}
+
+const char *sycl_backend_string(sycl::backend backend)
+{
+    switch (backend) {
+    case sycl::backend::ext_oneapi_level_zero: return "level_zero";
+    case sycl::backend::opencl: return "opencl";
+    case sycl::backend::ext_oneapi_cuda: return "cuda";
+    case sycl::backend::ext_oneapi_hip: return "hip";
+    default: return "unknown";
+    }
+}
+
+sycl::device select_sycl_device()
+{
+    std::vector<sycl::device> devices = sycl::device::get_devices();
+
+    for (size_t i = 0; i < devices.size(); ++i) {
+        if (devices[i].is_gpu() &&
+            devices[i].get_backend() == sycl::backend::ext_oneapi_level_zero) {
+            return devices[i];
+        }
+    }
+
+    std::ostringstream out;
+    out << "No Level Zero GPU SYCL device found. External semaphore import requires Level Zero. Available SYCL devices:";
+    for (size_t i = 0; i < devices.size(); ++i) {
+        out << "\n  [" << i << "] "
+            << sycl_backend_string(devices[i].get_backend()) << ": "
+            << devices[i].get_info<sycl::info::device::name>();
+    }
+    throw std::runtime_error(out.str());
 }
 
 void vk_check(VkResult r, const char *expr)
@@ -116,30 +128,6 @@ void vk_check(VkResult r, const char *expr)
 
 #define VK_CHECK(expr) vk_check((expr), #expr)
 
-void log_step(const std::string &msg)
-{
-    std::cout << msg << std::endl;
-}
-
-template <typename Fn>
-void timed_step(const std::string &label, Fn fn)
-{
-    std::cout << label << " begin" << std::endl;
-    const auto begin = std::chrono::high_resolution_clock::now();
-    fn();
-    const auto end = std::chrono::high_resolution_clock::now();
-    const double ms =
-        std::chrono::duration<double, std::milli>(end - begin).count();
-    std::cout << label << " end; cpu_ms=" << ms << std::endl;
-}
-
-void check_oidn_error(oidn::DeviceRef &device, const char *message)
-{
-    if (device.getError() != oidn::Error::None) {
-        throw std::runtime_error(message);
-    }
-}
-
 bool has_extension(const std::vector<VkExtensionProperties> &extensions,
                    const char *name)
 {
@@ -150,6 +138,23 @@ bool has_extension(const std::vector<VkExtensionProperties> &extensions,
     }
     return false;
 }
+
+struct VulkanContext {
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    uint32_t queue_family = 0;
+};
+
+struct ExternalBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    size_t allocation_size = 0;
+#ifdef _WIN32
+    HANDLE exported_memory_handle = nullptr;
+#endif
+};
 
 uint32_t find_memory_type(VkPhysicalDevice physical_device,
                           uint32_t type_filter,
@@ -165,31 +170,16 @@ uint32_t find_memory_type(VkPhysicalDevice physical_device,
         }
     }
 
-    throw std::runtime_error("Failed to find a compatible Vulkan memory type");
+    throw std::runtime_error("Failed to find compatible Vulkan memory type");
 }
-
-struct VulkanContext {
-    VkInstance instance = VK_NULL_HANDLE;
-    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    uint32_t queue_family = 0;
-};
-
-struct ExternalBuffer {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    size_t size = 0;
-};
 
 VulkanContext create_vulkan_context()
 {
     VulkanContext ctx;
 
-    log_step("[Vulkan setup] vkCreateInstance");
     VkApplicationInfo app_info = {};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.pApplicationName = "RenderVulkan OIDN timeline semaphore reproducer";
+    app_info.pApplicationName = "Vulkan SYCL timeline semaphore hang reproducer";
     app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.pEngineName = "standalone repro";
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -209,7 +199,7 @@ VulkanContext create_vulkan_context()
     std::vector<VkPhysicalDevice> devices(device_count);
     VK_CHECK(vkEnumeratePhysicalDevices(ctx.instance, &device_count, devices.data()));
 
-    const std::array<const char *, 6> required_extensions = {{
+    const std::array<const char *, 5> required_extensions = {{
         VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
         VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
 #ifdef _WIN32
@@ -219,11 +209,10 @@ VulkanContext create_vulkan_context()
 #endif
         VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
 #ifdef _WIN32
-        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
 #else
-        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
 #endif
-        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME
     }};
 
     for (size_t d = 0; d < devices.size(); ++d) {
@@ -275,13 +264,14 @@ VulkanContext create_vulkan_context()
                 break;
             }
         }
+
         if (ctx.physical_device != VK_NULL_HANDLE) {
             break;
         }
     }
 
     if (ctx.physical_device == VK_NULL_HANDLE) {
-        throw std::runtime_error("No Vulkan device supports the required timeline/external extensions");
+        throw std::runtime_error("No Vulkan device supports required timeline/external semaphore features");
     }
 
     const float queue_priority = 1.0f;
@@ -303,107 +293,10 @@ VulkanContext create_vulkan_context()
     device_ci.enabledExtensionCount = static_cast<uint32_t>(required_extensions.size());
     device_ci.ppEnabledExtensionNames = required_extensions.data();
 
-    log_step("[Vulkan setup] vkCreateDevice");
     VK_CHECK(vkCreateDevice(ctx.physical_device, &device_ci, nullptr, &ctx.device));
     vkGetDeviceQueue(ctx.device, ctx.queue_family, 0, &ctx.queue);
 
     return ctx;
-}
-
-ExternalBuffer create_external_buffer(const VulkanContext &ctx,
-                                      size_t size,
-                                      VkBufferUsageFlags usage)
-{
-    ExternalBuffer result;
-    result.size = size;
-
-    VkExternalMemoryBufferCreateInfo external_buffer_ci = {};
-    external_buffer_ci.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
-    external_buffer_ci.handleTypes = kExternalMemoryHandleType;
-
-    VkBufferCreateInfo buffer_ci = {};
-    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_ci.pNext = &external_buffer_ci;
-    buffer_ci.size = size;
-    buffer_ci.usage = usage;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VK_CHECK(vkCreateBuffer(ctx.device, &buffer_ci, nullptr, &result.buffer));
-
-    VkMemoryRequirements requirements;
-    vkGetBufferMemoryRequirements(ctx.device, result.buffer, &requirements);
-
-    VkExportMemoryAllocateInfo export_info = {};
-    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
-    export_info.handleTypes = kExternalMemoryHandleType;
-
-    VkMemoryAllocateInfo allocate_info = {};
-    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate_info.pNext = &export_info;
-    allocate_info.allocationSize = requirements.size;
-    allocate_info.memoryTypeIndex = find_memory_type(
-        ctx.physical_device, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    VK_CHECK(vkAllocateMemory(ctx.device, &allocate_info, nullptr, &result.memory));
-    VK_CHECK(vkBindBufferMemory(ctx.device, result.buffer, result.memory, 0));
-
-    return result;
-}
-
-void destroy_external_buffer(const VulkanContext &ctx, ExternalBuffer &buffer)
-{
-    if (buffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(ctx.device, buffer.buffer, nullptr);
-        buffer.buffer = VK_NULL_HANDLE;
-    }
-    if (buffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(ctx.device, buffer.memory, nullptr);
-        buffer.memory = VK_NULL_HANDLE;
-    }
-}
-
-oidn::BufferRef import_oidn_buffer(const VulkanContext &ctx,
-                                   oidn::DeviceRef &oidn_device,
-                                   const ExternalBuffer &buffer,
-                                   oidn::ExternalMemoryTypeFlag oidn_memory_type)
-{
-#ifdef _WIN32
-    PFN_vkGetMemoryWin32HandleKHR get_memory_handle =
-        reinterpret_cast<PFN_vkGetMemoryWin32HandleKHR>(
-            vkGetDeviceProcAddr(ctx.device, "vkGetMemoryWin32HandleKHR"));
-    if (!get_memory_handle) {
-        throw std::runtime_error("Failed to load vkGetMemoryWin32HandleKHR");
-    }
-
-    HANDLE handle = nullptr;
-    VkMemoryGetWin32HandleInfoKHR handle_info = {};
-    handle_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
-    handle_info.memory = buffer.memory;
-    handle_info.handleType = kExternalMemoryHandleType;
-    VK_CHECK(get_memory_handle(ctx.device, &handle_info, &handle));
-
-    oidn::BufferRef oidn_buffer =
-        oidn_device.newBuffer(oidn_memory_type, handle, nullptr, buffer.size);
-    CloseHandle(handle);
-#else
-    PFN_vkGetMemoryFdKHR get_memory_handle =
-        reinterpret_cast<PFN_vkGetMemoryFdKHR>(
-            vkGetDeviceProcAddr(ctx.device, "vkGetMemoryFdKHR"));
-    if (!get_memory_handle) {
-        throw std::runtime_error("Failed to load vkGetMemoryFdKHR");
-    }
-
-    int fd = -1;
-    VkMemoryGetFdInfoKHR handle_info = {};
-    handle_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
-    handle_info.memory = buffer.memory;
-    handle_info.handleType = kExternalMemoryHandleType;
-    VK_CHECK(get_memory_handle(ctx.device, &handle_info, &fd));
-
-    oidn::BufferRef oidn_buffer = oidn_device.newBuffer(oidn_memory_type, fd, buffer.size);
-    close(fd);
-#endif
-    check_oidn_error(oidn_device, "Failed to import Vulkan buffer into OIDN");
-    return oidn_buffer;
 }
 
 VkSemaphore create_exportable_timeline_semaphore(const VulkanContext &ctx)
@@ -427,9 +320,80 @@ VkSemaphore create_exportable_timeline_semaphore(const VulkanContext &ctx)
     return semaphore;
 }
 
-oidn::SemaphoreRef import_oidn_timeline_semaphore(const VulkanContext &ctx,
-                                                  oidn::DeviceRef &oidn_device,
-                                                  VkSemaphore semaphore)
+ExternalBuffer create_external_buffer(const VulkanContext &ctx)
+{
+    ExternalBuffer result;
+
+    VkExternalMemoryBufferCreateInfo external_buffer_ci = {};
+    external_buffer_ci.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+    external_buffer_ci.handleTypes = kExternalMemoryHandleType;
+
+    VkBufferCreateInfo buffer_ci = {};
+    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_ci.pNext = &external_buffer_ci;
+    buffer_ci.size = kExternalBufferSize;
+    buffer_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VK_CHECK(vkCreateBuffer(ctx.device, &buffer_ci, nullptr, &result.buffer));
+
+    VkMemoryRequirements requirements;
+    vkGetBufferMemoryRequirements(ctx.device, result.buffer, &requirements);
+    result.allocation_size = static_cast<size_t>(requirements.size);
+
+    VkExportMemoryAllocateInfo export_info = {};
+    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    export_info.handleTypes = kExternalMemoryHandleType;
+
+    VkMemoryDedicatedAllocateInfo dedicated_info = {};
+    dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicated_info.buffer = result.buffer;
+    export_info.pNext = &dedicated_info;
+
+    VkMemoryAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.pNext = &export_info;
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = find_memory_type(
+        ctx.physical_device, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VK_CHECK(vkAllocateMemory(ctx.device, &allocate_info, nullptr, &result.memory));
+    VK_CHECK(vkBindBufferMemory(ctx.device, result.buffer, result.memory, 0));
+
+    return result;
+}
+
+void destroy_external_buffer(const VulkanContext &ctx, ExternalBuffer &buffer)
+{
+#ifdef _WIN32
+    if (buffer.exported_memory_handle) {
+        CloseHandle(buffer.exported_memory_handle);
+        buffer.exported_memory_handle = nullptr;
+    }
+#endif
+    if (buffer.buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(ctx.device, buffer.buffer, nullptr);
+        buffer.buffer = VK_NULL_HANDLE;
+    }
+    if (buffer.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(ctx.device, buffer.memory, nullptr);
+        buffer.memory = VK_NULL_HANDLE;
+    }
+}
+
+uint64_t get_timeline_value(const VulkanContext &ctx, VkSemaphore semaphore)
+{
+    uint64_t value = 0;
+    VkResult r = vkGetSemaphoreCounterValue(ctx.device, semaphore, &value);
+    if (r != VK_SUCCESS) {
+        return uint64_t(-1);
+    }
+    return value;
+}
+
+syclexp::external_semaphore import_sycl_timeline_semaphore(const VulkanContext &ctx,
+                                                           VkSemaphore semaphore,
+                                                           const sycl::device &sycl_device,
+                                                           const sycl::context &sycl_context)
 {
 #ifdef _WIN32
     PFN_vkGetSemaphoreWin32HandleKHR get_semaphore_handle =
@@ -446,9 +410,15 @@ oidn::SemaphoreRef import_oidn_timeline_semaphore(const VulkanContext &ctx,
     handle_info.handleType = kExternalSemaphoreHandleType;
     VK_CHECK(get_semaphore_handle(ctx.device, &handle_info, &handle));
 
-    oidn::SemaphoreRef oidn_semaphore = oidn_device.newSemaphore(
-        oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, handle, nullptr);
+    auto sem_desc =
+        syclexp::external_semaphore_descriptor<syclexp::resource_win32_handle>{
+            handle,
+            syclexp::external_semaphore_handle_type::timeline_win32_nt_handle};
+    syclexp::external_semaphore sycl_sem =
+        syclexp::import_external_semaphore(sem_desc, sycl_device, sycl_context);
+
     CloseHandle(handle);
+    return sycl_sem;
 #else
     PFN_vkGetSemaphoreFdKHR get_semaphore_handle =
         reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
@@ -464,149 +434,70 @@ oidn::SemaphoreRef import_oidn_timeline_semaphore(const VulkanContext &ctx,
     handle_info.handleType = kExternalSemaphoreHandleType;
     VK_CHECK(get_semaphore_handle(ctx.device, &handle_info, &fd));
 
-    oidn::SemaphoreRef oidn_semaphore = oidn_device.newSemaphore(
-        oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreFD, fd);
+    auto sem_desc =
+        syclexp::external_semaphore_descriptor<syclexp::resource_fd>{
+            fd,
+            syclexp::external_semaphore_handle_type::timeline_fd};
+    syclexp::external_semaphore sycl_sem =
+        syclexp::import_external_semaphore(sem_desc, sycl_device, sycl_context);
+
     close(fd);
+    return sycl_sem;
 #endif
-    check_oidn_error(oidn_device, "Failed to import Vulkan timeline semaphore into OIDN");
-    return oidn_semaphore;
 }
 
-void record_render_command_buffer(const VulkanContext &ctx,
-                                  VkCommandBuffer cmd,
-                                  VkQueryPool query_pool,
-                                  const ExternalBuffer &accum_buffer,
-                                  const ExternalBuffer &denoise_buffer)
+syclexp::external_mem import_sycl_external_memory(const VulkanContext &ctx,
+                                                  ExternalBuffer &buffer,
+                                                  const sycl::device &sycl_device,
+                                                  const sycl::context &sycl_context)
 {
-    VkCommandBufferBeginInfo begin_info = {};
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    VK_CHECK(vkBeginCommandBuffer(cmd, &begin_info));
-
-    vkCmdResetQueryPool(cmd, query_pool, 0, TIMING_QUERY_COUNT * kMaxFramesInFlight);
-
-    vkCmdWriteTimestamp(cmd,
-                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                        query_pool,
-                        TIMING_QUERY_FRAME_BEGIN);
-    vkCmdWriteTimestamp(cmd,
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        query_pool,
-                        TIMING_QUERY_RAYTRACING_BEGIN);
-
-    // The real backend traces rays here.  This repro deliberately has no shader
-    // work; it keeps only the barriers and submission/semaphore behavior.
-
-    vkCmdWriteTimestamp(cmd,
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        query_pool,
-                        TIMING_QUERY_RAYTRACING_END);
-
-    std::array<VkBufferMemoryBarrier, 2> external_release_barriers;
-    std::memset(external_release_barriers.data(), 0,
-                external_release_barriers.size() * sizeof(VkBufferMemoryBarrier));
-
-    external_release_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    external_release_barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    external_release_barriers[0].dstAccessMask = 0;
-    external_release_barriers[0].srcQueueFamilyIndex = ctx.queue_family;
-    external_release_barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    external_release_barriers[0].buffer = accum_buffer.buffer;
-    external_release_barriers[0].offset = 0;
-    external_release_barriers[0].size = VK_WHOLE_SIZE;
-
-    external_release_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    external_release_barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    external_release_barriers[1].dstAccessMask = 0;
-    external_release_barriers[1].srcQueueFamilyIndex = ctx.queue_family;
-    external_release_barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    external_release_barriers[1].buffer = denoise_buffer.buffer;
-    external_release_barriers[1].offset = 0;
-    external_release_barriers[1].size = VK_WHOLE_SIZE;
-
-    vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                         0,
-                         0, nullptr,
-                         static_cast<uint32_t>(external_release_barriers.size()),
-                         external_release_barriers.data(),
-                         0, nullptr);
-
-    vkCmdWriteTimestamp(cmd,
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        query_pool,
-                        TIMING_QUERY_DENOISE_BEGIN);
-
-    VK_CHECK(vkEndCommandBuffer(cmd));
-}
-
-void record_tonemap_command_buffer(const VulkanContext &ctx,
-                                   VkCommandBuffer cmd,
-                                   VkQueryPool query_pool,
-                                   const ExternalBuffer &accum_buffer,
-                                   const ExternalBuffer &denoise_buffer)
-{
-    VkCommandBufferBeginInfo begin_info = {};
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    VK_CHECK(vkBeginCommandBuffer(cmd, &begin_info));
-
-    std::array<VkBufferMemoryBarrier, 2> external_acquire_barriers;
-    std::memset(external_acquire_barriers.data(), 0,
-                external_acquire_barriers.size() * sizeof(VkBufferMemoryBarrier));
-
-    external_acquire_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    external_acquire_barriers[0].srcAccessMask = 0;
-    external_acquire_barriers[0].dstAccessMask = 0;
-    external_acquire_barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    external_acquire_barriers[0].dstQueueFamilyIndex = ctx.queue_family;
-    external_acquire_barriers[0].buffer = accum_buffer.buffer;
-    external_acquire_barriers[0].offset = 0;
-    external_acquire_barriers[0].size = VK_WHOLE_SIZE;
-
-    external_acquire_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    external_acquire_barriers[1].srcAccessMask = 0;
-    external_acquire_barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    external_acquire_barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    external_acquire_barriers[1].dstQueueFamilyIndex = ctx.queue_family;
-    external_acquire_barriers[1].buffer = denoise_buffer.buffer;
-    external_acquire_barriers[1].offset = 0;
-    external_acquire_barriers[1].size = VK_WHOLE_SIZE;
-
-    vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         0,
-                         0, nullptr,
-                         static_cast<uint32_t>(external_acquire_barriers.size()),
-                         external_acquire_barriers.data(),
-                         0, nullptr);
-
-    vkCmdWriteTimestamp(cmd,
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        query_pool,
-                        TIMING_QUERY_TONEMAP_BEGIN);
-
-    // The real backend dispatches the tonemap compute shader here.  The hang this
-    // repro targets occurs before any useful tonemap work can complete if the
-    // timeline wait is never satisfied.
-
-    vkCmdWriteTimestamp(cmd,
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        query_pool,
-                        TIMING_QUERY_FRAME_END);
-
-    VK_CHECK(vkEndCommandBuffer(cmd));
-}
-
-uint64_t get_timeline_value(const VulkanContext &ctx, VkSemaphore semaphore)
-{
-    uint64_t value = 0;
-    VkResult r = vkGetSemaphoreCounterValue(ctx.device, semaphore, &value);
-    if (r != VK_SUCCESS) {
-        return uint64_t(-1);
+#ifdef _WIN32
+    PFN_vkGetMemoryWin32HandleKHR get_memory_handle =
+        reinterpret_cast<PFN_vkGetMemoryWin32HandleKHR>(
+            vkGetDeviceProcAddr(ctx.device, "vkGetMemoryWin32HandleKHR"));
+    if (!get_memory_handle) {
+        throw std::runtime_error("Failed to load vkGetMemoryWin32HandleKHR");
     }
-    return value;
+
+    VkMemoryGetWin32HandleInfoKHR handle_info = {};
+    handle_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
+    handle_info.memory = buffer.memory;
+    handle_info.handleType = kExternalMemoryHandleType;
+    VK_CHECK(get_memory_handle(ctx.device, &handle_info, &buffer.exported_memory_handle));
+
+    auto mem_desc = syclexp::external_mem_descriptor<syclexp::resource_win32_handle>{
+        buffer.exported_memory_handle,
+        syclexp::external_mem_handle_type::win32_nt_handle,
+        buffer.allocation_size};
+    syclexp::external_mem sycl_mem =
+        syclexp::import_external_memory(mem_desc, sycl_device, sycl_context);
+
+    return sycl_mem;
+#else
+    PFN_vkGetMemoryFdKHR get_memory_handle =
+        reinterpret_cast<PFN_vkGetMemoryFdKHR>(
+            vkGetDeviceProcAddr(ctx.device, "vkGetMemoryFdKHR"));
+    if (!get_memory_handle) {
+        throw std::runtime_error("Failed to load vkGetMemoryFdKHR");
+    }
+
+    int fd = -1;
+    VkMemoryGetFdInfoKHR handle_info = {};
+    handle_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    handle_info.memory = buffer.memory;
+    handle_info.handleType = kExternalMemoryHandleType;
+    VK_CHECK(get_memory_handle(ctx.device, &handle_info, &fd));
+
+    auto mem_desc = syclexp::external_mem_descriptor<syclexp::resource_fd>{
+        fd,
+        syclexp::external_mem_handle_type::opaque_fd,
+        buffer.allocation_size};
+    syclexp::external_mem sycl_mem =
+        syclexp::import_external_memory(mem_desc, sycl_device, sycl_context);
+
+    close(fd);
+    return sycl_mem;
+#endif
 }
 
 } // namespace
@@ -614,90 +505,55 @@ uint64_t get_timeline_value(const VulkanContext &ctx, VkSemaphore semaphore)
 int main()
 {
     try {
-        std::cout << "RenderVulkan/OIDN timeline semaphore hang reproducer\n";
-        std::cout << "----------------------------------------------------\n";
-        std::cout << "Framebuffer size used for OIDN buffers: "
-                  << kWidth << "x" << kHeight << "\n";
+        std::cout << "Vulkan/SYCL async timeline semaphore hang reproducer\n";
+        std::cout << "--------------------------------------------------\n";
         std::cout << "CPU final fence timeout: " << (kWaitTimeoutNs / 1000000000ull)
                   << " seconds\n" << std::flush;
 
         VulkanContext vk = create_vulkan_context();
 
-        log_step("[OIDN setup] Query Vulkan device UUID and create matching OIDN device");
-        VkPhysicalDeviceIDProperties id_properties = {};
-        id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-        VkPhysicalDeviceProperties2 properties = {};
-        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        properties.pNext = &id_properties;
-        vkGetPhysicalDeviceProperties2(vk.physical_device, &properties);
+        sycl::device sycl_device = select_sycl_device();
+        sycl::queue q{sycl_device, sycl::property_list{
+            sycl::property::queue::in_order{}}};
 
-        oidn::UUID uuid;
-        std::memcpy(uuid.bytes, id_properties.deviceUUID, sizeof(uuid.bytes));
-        oidn::DeviceRef oidn_device = oidn::newDevice(uuid);
-        if (oidn_device.getError() != oidn::Error::None) {
-            throw std::runtime_error("Failed to create OIDN device from Vulkan UUID");
-        }
-        oidn_device.commit();
-        check_oidn_error(oidn_device, "Failed to commit OIDN device");
+        auto sycl_context = q.get_context();
 
-        oidn::ExternalMemoryTypeFlag oidn_external_mem_type;
-        const oidn::ExternalMemoryTypeFlags oidn_external_mem_types =
-            oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
-#ifdef _WIN32
-        if (!(oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueWin32)) {
-            throw std::runtime_error("OIDN device does not support OpaqueWin32 external memory");
-        }
-        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::OpaqueWin32;
-#else
-        if (!(oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueFD)) {
-            throw std::runtime_error("OIDN device does not support OpaqueFD external memory");
-        }
-        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::OpaqueFD;
-#endif
+        std::cout << "[SYCL] Device: "
+                  << sycl_device.get_info<sycl::info::device::name>() << "\n";
+        std::cout << "[SYCL] Backend: "
+                  << sycl_backend_string(sycl_device.get_backend()) << "\n";
 
-        const size_t accum_size = 3ull * sizeof(float) * 4ull * kWidth * kHeight;
-        const size_t denoise_size = sizeof(float) * 4ull * kWidth * kHeight;
-        log_step("[Vulkan setup] Create exportable accum_buffer and denoise_buffer");
-        ExternalBuffer accum_buffer = create_external_buffer(
-            vk, accum_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        ExternalBuffer denoise_buffer = create_external_buffer(
-            vk, denoise_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-        log_step("[OIDN setup] Import Vulkan buffers into OIDN");
-        oidn::BufferRef oidn_input_buffer =
-            import_oidn_buffer(vk, oidn_device, accum_buffer, oidn_external_mem_type);
-        oidn::BufferRef oidn_output_buffer =
-            import_oidn_buffer(vk, oidn_device, denoise_buffer, oidn_external_mem_type);
-
-        log_step("[OIDN setup] Create and commit RT filter");
-        oidn::FilterRef oidn_filter = oidn_device.newFilter("RT");
-        check_oidn_error(oidn_device, "Failed to create OIDN RT filter");
-        oidn_filter.setImage("color", oidn_input_buffer, oidn::Format::Float3,
-                             kWidth, kHeight, 0 * sizeof(float) * 4,
-                             3 * sizeof(float) * 4);
-        oidn_filter.setImage("albedo", oidn_input_buffer, oidn::Format::Float3,
-                             kWidth, kHeight, 1 * sizeof(float) * 4,
-                             3 * sizeof(float) * 4);
-        oidn_filter.setImage("normal", oidn_input_buffer, oidn::Format::Float3,
-                             kWidth, kHeight, 2 * sizeof(float) * 4,
-                             3 * sizeof(float) * 4);
-        oidn_filter.setImage("output", oidn_output_buffer, oidn::Format::Float3,
-                             kWidth, kHeight, 0, sizeof(float) * 4);
-        oidn_filter.set("hdr", true);
-        oidn_filter.set("quality", oidn::Quality::Balanced);
-        oidn_filter.commit();
-        check_oidn_error(oidn_device, "Failed to commit OIDN RT filter");
-
-        log_step("[Vulkan setup] Create exportable timeline semaphore and import into OIDN");
         VkSemaphore timeline_semaphore = create_exportable_timeline_semaphore(vk);
-        oidn::SemaphoreRef oidn_timeline_semaphore =
-            import_oidn_timeline_semaphore(vk, oidn_device, timeline_semaphore);
+        syclexp::external_semaphore sycl_semaphore = import_sycl_timeline_semaphore(
+            vk, timeline_semaphore, sycl_device, sycl_context);
 
-        log_step("[Vulkan setup] Create command pool, command buffers, query pool, and final fence");
+        std::cout << "[Vulkan setup] Create exportable external buffers\n";
+        ExternalBuffer input_buffer = create_external_buffer(vk);
+        ExternalBuffer output_buffer = create_external_buffer(vk);
+        std::cout << "[Vulkan setup] Input allocation size: "
+                  << input_buffer.allocation_size << " bytes\n";
+        std::cout << "[Vulkan setup] Output allocation size: "
+                  << output_buffer.allocation_size << " bytes\n";
+
+        std::cout << "[SYCL setup] Import Vulkan external buffer memory\n";
+        syclexp::external_mem sycl_input_mem = import_sycl_external_memory(
+            vk, input_buffer, sycl_device, sycl_context);
+        syclexp::external_mem sycl_output_mem = import_sycl_external_memory(
+            vk, output_buffer, sycl_device, sycl_context);
+
+        std::cout << "[SYCL setup] Map imported external buffer memory\n";
+        int *sycl_input_words = static_cast<int *>(syclexp::map_external_linear_memory(
+            sycl_input_mem, 0, input_buffer.allocation_size, sycl_device, sycl_context));
+        int *sycl_output_words = static_cast<int *>(syclexp::map_external_linear_memory(
+            sycl_output_mem, 0, output_buffer.allocation_size, sycl_device, sycl_context));
+        std::cout << "[SYCL setup] Mapped input at "
+                  << static_cast<void *>(sycl_input_words) << ", output at "
+                  << static_cast<void *>(sycl_output_words) << "\n";
+
+        VkCommandPool command_pool = VK_NULL_HANDLE;
         VkCommandPoolCreateInfo pool_ci = {};
         pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         pool_ci.queueFamilyIndex = vk.queue_family;
-        VkCommandPool command_pool = VK_NULL_HANDLE;
         VK_CHECK(vkCreateCommandPool(vk.device, &pool_ci, nullptr, &command_pool));
 
         std::array<VkCommandBuffer, 2> command_buffers;
@@ -708,48 +564,88 @@ int main()
         alloc_info.commandBufferCount = static_cast<uint32_t>(command_buffers.size());
         VK_CHECK(vkAllocateCommandBuffers(vk.device, &alloc_info, command_buffers.data()));
 
-        VkQueryPool timing_query_pool = VK_NULL_HANDLE;
-        VkQueryPoolCreateInfo query_ci = {};
-        query_ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-        query_ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        query_ci.queryCount = TIMING_QUERY_COUNT * kMaxFramesInFlight;
-        VK_CHECK(vkCreateQueryPool(vk.device, &query_ci, nullptr, &timing_query_pool));
+        {
+            VkCommandBufferBeginInfo begin_info = {};
+            begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            VK_CHECK(vkBeginCommandBuffer(command_buffers[0], &begin_info));
+
+            VkBufferMemoryBarrier release_barrier = {};
+            release_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            release_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            release_barrier.dstAccessMask = 0;
+            release_barrier.srcQueueFamilyIndex = vk.queue_family;
+            release_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+            release_barrier.buffer = input_buffer.buffer;
+            release_barrier.offset = 0;
+            release_barrier.size = VK_WHOLE_SIZE;
+
+            std::array<VkBufferMemoryBarrier, 2> release_barriers = {{
+
+                release_barrier,
+                release_barrier
+            }};
+            release_barriers[1].buffer = output_buffer.buffer;
+
+            vkCmdPipelineBarrier(command_buffers[0],
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                 0,
+                                 0, nullptr,
+                                 static_cast<uint32_t>(release_barriers.size()), release_barriers.data(),
+                                 0, nullptr);
+
+            VK_CHECK(vkEndCommandBuffer(command_buffers[0]));
+        }
+        {
+            VkCommandBufferBeginInfo begin_info = {};
+            begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            VK_CHECK(vkBeginCommandBuffer(command_buffers[1], &begin_info));
+
+            VkBufferMemoryBarrier acquire_barrier = {};
+            acquire_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            acquire_barrier.srcAccessMask = 0;
+            acquire_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            acquire_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+            acquire_barrier.dstQueueFamilyIndex = vk.queue_family;
+            acquire_barrier.buffer = input_buffer.buffer;
+            acquire_barrier.offset = 0;
+            acquire_barrier.size = VK_WHOLE_SIZE;
+
+            std::array<VkBufferMemoryBarrier, 2> acquire_barriers = {{
+
+                acquire_barrier,
+                acquire_barrier
+            }};
+            acquire_barriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            acquire_barriers[1].buffer = output_buffer.buffer;
+
+            vkCmdPipelineBarrier(command_buffers[1],
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0,
+                                 0, nullptr,
+                                 static_cast<uint32_t>(acquire_barriers.size()), acquire_barriers.data(),
+                                 0, nullptr);
+
+            VK_CHECK(vkEndCommandBuffer(command_buffers[1]));
+        }
 
         VkFence final_fence = VK_NULL_HANDLE;
         VkFenceCreateInfo fence_ci = {};
         fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         VK_CHECK(vkCreateFence(vk.device, &fence_ci, nullptr, &final_fence));
 
-        log_step("[Vulkan setup] Record render_cmd_buf with RenderVulkan external release barriers");
-        record_render_command_buffer(vk,
-                                     command_buffers[0],
-                                     timing_query_pool,
-                                     accum_buffer,
-                                     denoise_buffer);
-        log_step("[Vulkan setup] Record tonemap_cmd_buf with RenderVulkan external acquire barriers");
-        record_tonemap_command_buffer(vk,
-                                      command_buffers[1],
-                                      timing_query_pool,
-                                      accum_buffer,
-                                      denoise_buffer);
+        const uint64_t N = 1;
+        const uint64_t render_done = N;
+        const uint64_t sycl_done = N + 1;
 
-        // Match RenderVulkan::render for TimelineSemaphore mode.
-        const uint32_t slot = 0;
-        uint64_t oidn_timeline_value = 1;
-        const uint64_t timeline_render_done_value = oidn_timeline_value++;
-        const uint64_t timeline_denoise_done_value = oidn_timeline_value++;
+        std::cout << "[Frame] render_done=" << render_done
+                  << ", sycl_done=" << sycl_done << std::endl;
 
-        std::cout << "[Frame] slot=" << slot
-                  << ", render_done=" << timeline_render_done_value
-                  << ", denoise_done=" << timeline_denoise_done_value << std::endl;
-
-        std::array<VkPipelineStageFlags, 1> wait_stages = {{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}};
         VkTimelineSemaphoreSubmitInfo timeline_info = {};
         timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timeline_info.waitSemaphoreValueCount = 0;
-        timeline_info.pWaitSemaphoreValues = nullptr;
         timeline_info.signalSemaphoreValueCount = 1;
-        timeline_info.pSignalSemaphoreValues = &timeline_render_done_value;
+        timeline_info.pSignalSemaphoreValues = &render_done;
 
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -759,31 +655,32 @@ int main()
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &timeline_semaphore;
 
-        timed_step("[Vulkan queue] vkQueueSubmit(render_cmd_buf, signal timeline render_done)", [&]() {
-            VK_CHECK(vkQueueSubmit(vk.queue, 1, &submit_info, VK_NULL_HANDLE));
-        });
-        std::cout << "[Diagnostics] timeline semaphore current value after render submit return: "
+        std::cout << "[Vulkan] submit cmd0, signal timeline " << render_done << "\n";
+        VK_CHECK(vkQueueSubmit(vk.queue, 1, &submit_info, VK_NULL_HANDLE));
+
+        std::cout << "[Diagnostics] timeline after cmd0 submit: "
                   << get_timeline_value(vk, timeline_semaphore) << std::endl;
 
-        timed_step("[OIDN/SYCL] oidn_device.waitSemaphoreAsync(timeline, render_done)", [&]() {
-            oidn_device.waitSemaphoreAsync(oidn_timeline_semaphore, timeline_render_done_value);
-            check_oidn_error(oidn_device, "OIDN waitSemaphoreAsync failed");
+        std::cout << "[SYCL] wait_external_semaphore(" << render_done << ")\n";
+        q.ext_oneapi_wait_external_semaphore(sycl_semaphore, render_done);
+
+        q.submit([&](sycl::handler &h) {
+            int *input_words = sycl_input_words;
+            int *output_words = sycl_output_words;
+            h.parallel_for(sycl::range<1>(kExternalBufferSize / sizeof(int)),
+                           [=](sycl::id<1> i) {
+                               output_words[i] = input_words[i] + 42;
+                           });
         });
 
-        timed_step("[OIDN/SYCL] oidn_filter.executeAsync()", [&]() {
-            oidn_filter.executeAsync();
-            check_oidn_error(oidn_device, "OIDN executeAsync failed");
-        });
+        std::cout << "[SYCL] signal_external_semaphore(" << sycl_done << ")\n";
+        q.ext_oneapi_signal_external_semaphore(sycl_semaphore, sycl_done);
 
-        timed_step("[OIDN/SYCL] oidn_device.signalSemaphoreAsync(timeline, denoise_done)", [&]() {
-            oidn_device.signalSemaphoreAsync(oidn_timeline_semaphore, timeline_denoise_done_value);
-            check_oidn_error(oidn_device, "OIDN signalSemaphoreAsync failed");
-        });
-        std::cout << "[Diagnostics] timeline semaphore current value after OIDN async signal enqueue: "
+        std::cout << "[Diagnostics] timeline after SYCL async signal enqueue: "
                   << get_timeline_value(vk, timeline_semaphore) << std::endl;
 
-        // Mutate the same VkSubmitInfo/VkTimelineSemaphoreSubmitInfo exactly as
-        // RenderVulkan does before submitting tonemap_cmd_buf.
+        std::array<VkPipelineStageFlags, 1> wait_stages = {{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}};
+
         submit_info.pCommandBuffers = &command_buffers[1];
         submit_info.waitSemaphoreCount = 1;
         submit_info.pWaitSemaphores = &timeline_semaphore;
@@ -792,46 +689,58 @@ int main()
         submit_info.pSignalSemaphores = nullptr;
 
         timeline_info.waitSemaphoreValueCount = 1;
-        timeline_info.pWaitSemaphoreValues = &timeline_denoise_done_value;
+        timeline_info.pWaitSemaphoreValues = &sycl_done;
         timeline_info.signalSemaphoreValueCount = 0;
         timeline_info.pSignalSemaphoreValues = nullptr;
 
-        timed_step("[Vulkan queue] vkQueueSubmit(tonemap_cmd_buf, wait timeline denoise_done, signal final fence)", [&]() {
-            VK_CHECK(vkQueueSubmit(vk.queue, 1, &submit_info, final_fence));
-        });
-        std::cout << "[Diagnostics] timeline semaphore current value after tonemap submit return: "
+        std::cout << "[Vulkan] submit cmd1, wait timeline " << sycl_done
+                  << ", signal final fence\n";
+        VK_CHECK(vkQueueSubmit(vk.queue, 1, &submit_info, final_fence));
+
+        std::cout << "[Diagnostics] timeline after cmd1 submit: "
                   << get_timeline_value(vk, timeline_semaphore) << std::endl;
 
-        log_step("[CPU] vkWaitForFences(final_fence, timeout) begin");
-        const VkResult wait_result = vkWaitForFences(
-            vk.device, 1, &final_fence, VK_TRUE, kWaitTimeoutNs);
+        const VkResult wait_result = vkWaitForFences(vk.device, 1, &final_fence, VK_TRUE, kWaitTimeoutNs);
 
         if (wait_result == VK_TIMEOUT) {
             std::cerr << "\n[FAIL] TIMEOUT waiting for final Vulkan fence.\n"
-                      << "       This means tonemap_cmd_buf did not complete.\n"
-                      << "       Most likely the Vulkan queue is stuck waiting for timeline value "
-                      << timeline_denoise_done_value << ".\n"
-                      << "       Current Vulkan timeline semaphore value: "
-                      << get_timeline_value(vk, timeline_semaphore) << "\n"
-                      << "       Expected values: render_done=" << timeline_render_done_value
-                      << ", denoise_done=" << timeline_denoise_done_value << "\n"
-                      << "       Last completed diagnostic step was printed above.\n";
+                      << "       Vulkan queue likely stuck waiting for timeline value "
+                      << sycl_done << ".\n"
+                      << "       Current timeline value: "
+                      << get_timeline_value(vk, timeline_semaphore) << "\n";
+
+            syclexp::release_external_semaphore(sycl_semaphore, sycl_device, sycl_context);
+            syclexp::unmap_external_linear_memory(sycl_input_words, sycl_device, sycl_context);
+            syclexp::unmap_external_linear_memory(sycl_output_words, sycl_device, sycl_context);
+            syclexp::release_external_memory(sycl_input_mem, sycl_device, sycl_context);
+            syclexp::release_external_memory(sycl_output_mem, sycl_device, sycl_context);
+            vkDestroyFence(vk.device, final_fence, nullptr);
+            vkDestroyCommandPool(vk.device, command_pool, nullptr);
+            destroy_external_buffer(vk, input_buffer);
+            destroy_external_buffer(vk, output_buffer);
+            vkDestroySemaphore(vk.device, timeline_semaphore, nullptr);
+            vkDestroyDevice(vk.device, nullptr);
+            vkDestroyInstance(vk.instance, nullptr);
             return 1;
         }
-        VK_CHECK(wait_result);
 
-        std::cout << "[CPU] vkWaitForFences returned VK_SUCCESS" << std::endl;
-        std::cout << "[Diagnostics] final timeline semaphore value: "
-                  << get_timeline_value(vk, timeline_semaphore) << std::endl;
-        std::cout << "[PASS] RenderVulkan-style OIDN timeline semaphore sequence completed.\n";
+        VK_CHECK(wait_result);
+        std::cout << "[PASS] Fence completed. Final timeline value: "
+                  << get_timeline_value(vk, timeline_semaphore) << "\n";
+
+        q.wait();
+        syclexp::release_external_semaphore(sycl_semaphore, sycl_device, sycl_context);
+        syclexp::unmap_external_linear_memory(sycl_input_words, sycl_device, sycl_context);
+        syclexp::unmap_external_linear_memory(sycl_output_words, sycl_device, sycl_context);
+        syclexp::release_external_memory(sycl_input_mem, sycl_device, sycl_context);
+        syclexp::release_external_memory(sycl_output_mem, sycl_device, sycl_context);
 
         VK_CHECK(vkQueueWaitIdle(vk.queue));
         vkDestroyFence(vk.device, final_fence, nullptr);
-        vkDestroyQueryPool(vk.device, timing_query_pool, nullptr);
         vkDestroyCommandPool(vk.device, command_pool, nullptr);
+        destroy_external_buffer(vk, input_buffer);
+        destroy_external_buffer(vk, output_buffer);
         vkDestroySemaphore(vk.device, timeline_semaphore, nullptr);
-        destroy_external_buffer(vk, accum_buffer);
-        destroy_external_buffer(vk, denoise_buffer);
         vkDestroyDevice(vk.device, nullptr);
         vkDestroyInstance(vk.instance, nullptr);
         return 0;

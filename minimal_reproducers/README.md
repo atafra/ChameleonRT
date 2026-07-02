@@ -14,65 +14,75 @@ Reproducers in this folder should:
 
 ### Issue
 
-This reproducer tracks a Vulkan/OIDN timeline semaphore interop hang observed in the `RenderVulkan` backend when using OIDN timeline semaphore synchronization.
+This reproducer tracks a Vulkan/SYCL external timeline semaphore interop hang observed in the `RenderVulkan` timeline-semaphore path.
 
-It mirrors the synchronization/submission sequence used by `backends/vulkan/render_vulkan.cpp` for `OIDNInteropMode::TimelineSemaphore`:
+It removes the `OIDN` dependency while preserving the interop ingredients used by the OIDN SYCL device path:
 
-1. Vulkan submits a `render_cmd_buf` and signals timeline semaphore value `N`.
-2. OIDN/SYCL enqueues `waitSemaphoreAsync(sem, N)`.
-3. OIDN/SYCL enqueues `executeAsync()`.
-4. OIDN/SYCL enqueues `signalSemaphoreAsync(sem, N + 1)`.
-5. Vulkan submits a `tonemap_cmd_buf` waiting on timeline semaphore value `N + 1`.
-6. CPU waits for the final Vulkan fence with a timeout.
+1. Vulkan creates exportable external buffers and an exportable timeline semaphore.
+2. SYCL imports the Vulkan buffers as external memory and maps them as linear memory.
+3. SYCL imports the Vulkan timeline semaphore.
+4. Vulkan submits `cmd0` with external queue-family release barriers and signals timeline value `N`.
+5. SYCL enqueues `ext_oneapi_wait_external_semaphore(sem, N)`.
+6. SYCL enqueues a dummy kernel that reads/writes the imported Vulkan buffers.
+7. SYCL enqueues `ext_oneapi_signal_external_semaphore(sem, N + 1)`.
+8. Vulkan submits `cmd1` with external queue-family acquire barriers, waiting on timeline value `N + 1` and signaling a final `VkFence`.
+9. CPU waits for the final Vulkan fence with a timeout.
 
-The repro intentionally avoids ray tracing, scene setup, shaders, and swapchain work. It keeps the real OIDN filter, exportable Vulkan buffers, imported OIDN buffers, imported Vulkan timeline semaphore, and the same external queue-family release/acquire barriers used by the backend.
+The repro intentionally avoids ray tracing, scene setup, shaders, swapchain work, and OIDN filter setup. It requires the SYCL Level Zero backend; OpenCL does not support this external semaphore path.
 
-### Last reproduced result
+### Findings
 
 Date: 2026-07-02
 
-The reproducer built and ran successfully, but timed out waiting for the final Vulkan fence. The Vulkan timeline semaphore reached value `1` after the Vulkan render submission, but OIDN's async signal did not advance it to value `2`.
+The hang reproduces only when the SYCL queue uses the normal in-order Level Zero path. A queue created with `sycl::ext::intel::property::queue::immediate_command_list{}` completes successfully and hides the issue.
+
+Confirmed behavior:
+
+- Level Zero backend is required.
+- Vulkan timeline semaphore import works.
+- Vulkan external memory import and linear mapping work when the exported Win32 memory handle is kept alive until cleanup.
+- Two imported Vulkan buffers plus a dummy SYCL kernel are sufficient; OIDN is not required.
+- With a non-immediate in-order SYCL queue, the async SYCL signal does not advance the Vulkan timeline semaphore before Vulkan waits on `N + 1`, causing the final fence wait to time out.
 
 Relevant output:
 
 ```text
-[Frame] slot=0, render_done=1, denoise_done=2
-[Vulkan queue] vkQueueSubmit(render_cmd_buf, signal timeline render_done) end
-[Diagnostics] timeline semaphore current value after render submit return: 1
-[OIDN/SYCL] oidn_device.waitSemaphoreAsync(timeline, render_done) end
-[OIDN/SYCL] oidn_filter.executeAsync() end
-[OIDN/SYCL] oidn_device.signalSemaphoreAsync(timeline, denoise_done) end
-[Diagnostics] timeline semaphore current value after OIDN async signal enqueue: 1
-[Vulkan queue] vkQueueSubmit(tonemap_cmd_buf, wait timeline denoise_done, signal final fence) end
-[Diagnostics] timeline semaphore current value after tonemap submit return: 1
-[CPU] vkWaitForFences(final_fence, timeout) begin
+[SYCL] Backend: level_zero
+[Vulkan setup] Create exportable external buffers
+[SYCL setup] Import Vulkan external buffer memory
+[SYCL setup] Map imported external buffer memory
+[Frame] render_done=1, sycl_done=2
+[Vulkan] submit cmd0, signal timeline 1
+[Diagnostics] timeline after cmd0 submit: 1
+[SYCL] wait_external_semaphore(1)
+[SYCL] signal_external_semaphore(2)
+[Diagnostics] timeline after SYCL async signal enqueue: 1
+[Vulkan] submit cmd1, wait timeline 2, signal final fence
+[Diagnostics] timeline after cmd1 submit: 1
 
 [FAIL] TIMEOUT waiting for final Vulkan fence.
-       This means tonemap_cmd_buf did not complete.
-       Most likely the Vulkan queue is stuck waiting for timeline value 2.
-       Current Vulkan timeline semaphore value: 1
-       Expected values: render_done=1, denoise_done=2
+       Vulkan queue likely stuck waiting for timeline value 2.
+       Current timeline value: 1
 ```
 
 ### Local build command used for validation
 
-From `D:\Code\ChameleonRT`:
+From `D:\Code\ChameleonRT\build\vs`:
 
 ```cmd
 call "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
-cl /nologo /std:c++14 /EHsc /O2 ^
-  /Ibuild\vs\oidn\install\include ^
-  /I%VULKAN_SDK%\Include ^
-  minimal_reproducers\vulkan_oidn_timeline_semaphore_repro.cpp ^
-  /Fe:build\vs\vulkan_oidn_timeline_semaphore_repro.exe ^
-  /link /LIBPATH:build\vs\oidn\install\lib /LIBPATH:%VULKAN_SDK%\Lib ^
-  OpenImageDenoise.lib vulkan-1.lib
+.\dpcpp\src\bin\clang++.exe -fsycl -std=c++17 -O2 ^
+  -I%VULKAN_SDK%\Include ^
+  ..\..\minimal_reproducers\vulkan_oidn_timeline_semaphore_repro.cpp ^
+  -o vulkan_oidn_timeline_semaphore_repro.exe ^
+  -L%VULKAN_SDK%\Lib -lvulkan-1
 ```
 
-Runtime DLL path used:
+Runtime command used:
 
 ```powershell
-$env:PATH="D:\Code\ChameleonRT\build\vs\oidn\install\bin;D:\Code\ChameleonRT\build\vs\Release;D:\Code\ChameleonRT\build\vs\Debug;$env:PATH"
+$env:PATH="D:\Code\ChameleonRT\build\vs\dpcpp\src\bin;D:\Code\ChameleonRT\build\vs\Release;$env:PATH"
+$env:ONEAPI_DEVICE_SELECTOR="level_zero:gpu"
 D:\Code\ChameleonRT\build\vs\vulkan_oidn_timeline_semaphore_repro.exe
 ```
 
@@ -122,8 +132,7 @@ Vulkan-reported GPU information:
 - Device UUID: `8680a056-0800-0000-0300-000000000000`
 - Driver UUID: `33322e30-2e31-3031-2e39-393939000000`
 
-OIDN build used for validation:
+SYCL runtime used for validation:
 
-- `OpenImageDenoise.dll` product/file version: `2.5.1-devel`
-- `OIDN_VERSION_STRING`: `2.5.1-devel`
-- Installed path used: `D:\Code\ChameleonRT\build\vs\oidn\install`
+- Staged ChameleonRT DPC++ runtime: `D:\Code\ChameleonRT\build\vs\dpcpp\src\bin`
+- SYCL backend: Level Zero (`ONEAPI_DEVICE_SELECTOR=level_zero:gpu`)
