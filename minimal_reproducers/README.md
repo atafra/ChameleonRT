@@ -16,48 +16,46 @@ Reproducers in this folder should:
 
 This reproducer tracks a Vulkan/SYCL external timeline semaphore interop hang observed in the `RenderVulkan` timeline-semaphore path.
 
-It removes the `OIDN` dependency while preserving the interop ingredients used by the OIDN SYCL device path:
+It removes the `OIDN` dependency and all external memory/kernel work. The current minimized repro keeps only the synchronization protocol:
 
-1. Vulkan creates exportable external buffers and an exportable timeline semaphore.
-2. SYCL imports the Vulkan buffers as external memory and maps them as linear memory.
-3. SYCL imports the Vulkan timeline semaphore.
-4. Vulkan submits `cmd0` with external queue-family release barriers and signals timeline value `N`.
-5. SYCL enqueues `ext_oneapi_wait_external_semaphore(sem, N)`.
-6. SYCL enqueues a dummy kernel that reads/writes the imported Vulkan buffers.
-7. SYCL enqueues `ext_oneapi_signal_external_semaphore(sem, N + 1)`.
-8. Vulkan submits `cmd1` with external queue-family acquire barriers, waiting on timeline value `N + 1` and signaling a final `VkFence`.
-9. CPU waits for the final Vulkan fence with a timeout.
+1. Vulkan creates an exportable timeline semaphore.
+2. SYCL imports the Vulkan timeline semaphore.
+3. Vulkan submits an empty queue submission that signals timeline value `N`.
+4. SYCL enqueues `ext_oneapi_wait_external_semaphore(sem, N)`.
+5. SYCL enqueues `ext_oneapi_signal_external_semaphore(sem, N + 1)`.
+6. Vulkan submits an empty queue submission waiting on timeline value `N + 1` and signaling a final `VkFence`.
+7. CPU waits for the final Vulkan fence with a timeout.
 
-The repro intentionally avoids ray tracing, scene setup, shaders, swapchain work, and OIDN filter setup. It requires the SYCL Level Zero backend; OpenCL does not support this external semaphore path.
+The repro intentionally avoids OIDN, external memory sharing, kernels, ray tracing, shaders, swapchain work, and command buffers. It requires the SYCL Level Zero backend; OpenCL does not support this external semaphore path.
 
 ### Findings
 
 Date: 2026-07-02
 
-The hang reproduces only when the SYCL queue uses the normal in-order Level Zero path. A queue created with `sycl::ext::intel::property::queue::immediate_command_list{}` completes successfully and hides the issue.
+The hang reproduces with a pure imported Vulkan timeline semaphore and a default non-immediate Level Zero SYCL queue. External memory imports and SYCL kernels are not required.
 
 Confirmed behavior:
 
 - Level Zero backend is required.
 - Vulkan timeline semaphore import works.
-- Vulkan external memory import and linear mapping work when the exported Win32 memory handle is kept alive until cleanup.
-- Two imported Vulkan buffers plus a dummy SYCL kernel are sufficient; OIDN is not required.
-- With a non-immediate in-order SYCL queue, the async SYCL signal does not advance the Vulkan timeline semaphore before Vulkan waits on `N + 1`, causing the final fence wait to time out.
+- The initial timeline value must be signaled by a Vulkan GPU queue submission to match `RenderVulkan` behavior; host-side `vkSignalSemaphore` was intentionally not used.
+- No Vulkan command buffers are required; empty queue submissions are enough.
+- No external memory sharing is required.
+- No SYCL kernel is required; `wait_external_semaphore -> signal_external_semaphore` is enough.
+- A SYCL queue using `sycl::ext::intel::property::queue::immediate_command_list{}` completes successfully and hides the issue.
+- With the default non-immediate Level Zero SYCL queue, the async SYCL signal does not advance the Vulkan timeline semaphore to `N + 1`, causing the final Vulkan fence wait to time out.
 
 Relevant output:
 
 ```text
 [SYCL] Backend: level_zero
-[Vulkan setup] Create exportable external buffers
-[SYCL setup] Import Vulkan external buffer memory
-[SYCL setup] Map imported external buffer memory
 [Frame] render_done=1, sycl_done=2
-[Vulkan] submit cmd0, signal timeline 1
-[Diagnostics] timeline after cmd0 submit: 1
+[Vulkan] submit signal timeline 1
+[Diagnostics] timeline after signal submit: 1
 [SYCL] wait_external_semaphore(1)
 [SYCL] signal_external_semaphore(2)
 [Diagnostics] timeline after SYCL async signal enqueue: 1
-[Vulkan] submit cmd1, wait timeline 2, signal final fence
+[Vulkan] submit wait timeline 2, signal final fence
 [Diagnostics] timeline after cmd1 submit: 1
 
 [FAIL] TIMEOUT waiting for final Vulkan fence.
