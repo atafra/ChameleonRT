@@ -134,3 +134,67 @@ SYCL runtime used for validation:
 
 - Staged ChameleonRT DPC++ runtime: `D:\Code\ChameleonRT\build\vs\dpcpp\src\bin`
 - SYCL backend: Level Zero (`ONEAPI_DEVICE_SELECTOR=level_zero:gpu`)
+
+## `dxr_sycl_fence_signal_repro.cpp`
+
+### Issue
+
+This reproducer tracks a D3D12/SYCL external fence semaphore hang observed in the `RenderDXR` async OIDN interop path.
+
+It removes the `OIDN` dependency and keeps only the synchronization protocol used around OIDN:
+
+1. D3D12 creates a shared `ID3D12Fence`.
+2. SYCL imports the shared D3D12 fence as `win32_nt_dx12_fence` external semaphore.
+3. D3D12 queue signals fence value `N`.
+4. D3D12 queue enqueues a GPU-side wait for fence value `N + 1`.
+5. D3D12 queue enqueues a signal for fence value `N + 2`.
+6. SYCL enqueues `ext_oneapi_wait_external_semaphore(sem, N)`.
+7. SYCL enqueues `ext_oneapi_signal_external_semaphore(sem, N + 1)`.
+8. CPU waits for D3D12 fence value `N + 2` with a timeout.
+
+The repro intentionally avoids OIDN, external memory sharing, kernels, ray tracing, shaders, and command lists. It requires the SYCL Level Zero backend.
+
+### Findings
+
+Date: 2026-07-02
+
+The hang reproduces with a pure imported D3D12 fence semaphore and a default non-immediate Level Zero SYCL queue. External memory imports and SYCL kernels are not required.
+
+Relevant output:
+
+```text
+[D3D12 setup] selected adapter: Intel(R) Graphics d ci-neo-038964 DCH-D RI
+[SYCL] Device: Intel(R) Arc(TM) A770 Graphics
+[SYCL] Backend: level_zero
+[Frame] render_done=1, sycl_done=2, final_done=3
+[D3D12] queue Signal(shared fence, 1)
+[Diagnostics] shared fence after render signal submit: 1
+[D3D12] queue Wait(shared fence, 2) [GPU-side wait]
+[D3D12] queue Signal(shared fence, 3)
+[SYCL] wait_external_semaphore(1)
+[SYCL] signal_external_semaphore(2)
+[Diagnostics] shared fence after SYCL async signal enqueue: 1
+[CPU] Wait for shared fence value 3 with timeout
+
+[FAIL] TIMEOUT waiting for final D3D12 fence.
+       D3D12 queue likely stuck waiting for fence value 2.
+       Current shared fence value: 1
+```
+
+### Local build command used for validation
+
+From `D:\Code\ChameleonRT\build\vs`:
+
+```cmd
+call "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
+.\dpcpp\src\bin\clang++.exe -fsycl -std=c++17 -O2 ^
+  ..\..\minimal_reproducers\dxr_sycl_fence_signal_repro.cpp ^
+  -o dxr_sycl_fence_signal_repro.exe -ld3d12 -ldxgi
+```
+
+Runtime command used:
+
+```powershell
+$env:PATH="D:\Code\ChameleonRT\build\vs\dpcpp\src\bin;D:\Code\ChameleonRT\build\vs\Release;$env:PATH"
+$env:ONEAPI_DEVICE_SELECTOR="level_zero:gpu"
+D:\Code\ChameleonRT\build\vs\dxr_sycl_fence_signal_repro.exe
