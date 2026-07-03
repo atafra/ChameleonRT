@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -83,7 +84,7 @@ ImU32 timeline_color(const char *name)
 }
 
 int main(int argc, const char **argv)
-{
+try {
     const std::vector<std::string> args(argv, argv + argc);
     auto fnd_help = std::find_if(args.begin(), args.end(), [](const std::string &a) {
         return a == "-h" || a == "--help";
@@ -133,9 +134,23 @@ int main(int argc, const char **argv)
     ImGui_ImplSDL2_Init(window);
 
     render_plugin->set_imgui_context(ImGui::GetCurrentContext());
-    {
+
+    // The backend renderer lives in the plugin DLL, so an exception thrown from
+    // run_app() originates inside that DLL. It must be caught here, while
+    // render_plugin (and therefore the DLL) is still loaded. If the exception
+    // were allowed to unwind out of this scope, render_plugin's destructor would
+    // FreeLibrary()/dlclose() the DLL before any handler ran, invalidating the
+    // exception object's vtable/RTTI and crashing when what() is read.
+    int exit_code = 0;
+    try {
         std::unique_ptr<Display> display = render_plugin->make_display(window);
         run_app(args, window, display.get(), render_plugin.get());
+    } catch (const std::exception &e) {
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        exit_code = 1;
+    } catch (...) {
+        std::cerr << "Fatal error: unknown exception" << std::endl;
+        exit_code = 1;
     }
 
     ImGui_ImplSDL2_Shutdown();
@@ -144,7 +159,16 @@ int main(int argc, const char **argv)
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    return 0;
+    return exit_code;
+} catch (const std::exception &e) {
+    // Backstop for failures during setup (argument parsing, plugin load, window
+    // creation). These originate in the executable, not the backend DLL, so the
+    // exception object stays valid here.
+    std::cerr << "Fatal error: " << e.what() << std::endl;
+    return 1;
+} catch (...) {
+    std::cerr << "Fatal error: unknown exception" << std::endl;
+    return 1;
 }
 
 void run_app(const std::vector<std::string> &args,

@@ -38,12 +38,28 @@ float elapsed_timestamp_ms(const uint64_t *timestamps,
 }
 
 #ifdef ENABLE_OIDN
-void check_oidn_error(oidn::DeviceRef &device, const char *message)
+// A successful OIDN import returns a valid (non-null) handle; a failed import returns a null
+// handle (and sets the device error state), so the returned handle indicates success.
+template <typename HandleT>
+void check_oidn_import(const HandleT &handle, const char *message)
 {
-    if (device.getError() != oidn::Error::None) {
+    if (!handle) {
         throw std::runtime_error(message);
     }
 }
+
+#ifndef _WIN32
+// On the fd import path ownership of the fd is only transferred to the driver on a successful
+// import. If the import failed (null handle) we still own the fd, so close it before throwing.
+template <typename HandleT>
+void check_oidn_import(const HandleT &handle, const char *message, int fd)
+{
+    if (!handle) {
+        close(fd);
+        throw std::runtime_error(message);
+    }
+}
+#endif
 #endif
 
 } // namespace
@@ -534,7 +550,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreWin32, win32_semaphore_handle, nullptr); // FIXME: AMD seems to require OpaqueWin32 instead
         CloseHandle(win32_semaphore_handle);
-        check_oidn_error(oidn_device, "Failed to import Vulkan timeline semaphore into OIDN.");
+        check_oidn_import(oidn_timeline_semaphore,
+                          "Failed to import Vulkan timeline semaphore into OIDN.");
 #else
         int fd_semaphore_handle;
         VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
@@ -553,8 +570,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
         oidn_timeline_semaphore = oidn_device.newSemaphore(
             oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreFD, fd_semaphore_handle);
-        close(fd_semaphore_handle);
-        check_oidn_error(oidn_device, "Failed to import Vulkan timeline semaphore into OIDN.");
+        check_oidn_import(oidn_timeline_semaphore,
+                          "Failed to import Vulkan timeline semaphore into OIDN.",
+                          fd_semaphore_handle);
 #endif
     }
 
@@ -606,6 +624,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 win32_semaphore_handle,
                 nullptr);
             CloseHandle(win32_semaphore_handle);
+            check_oidn_import(oidn_timeline_semaphore_per_slot[i],
+                              "Failed to import per-slot Vulkan timeline semaphore into OIDN.");
 #else
             int fd_semaphore_handle;
             VkSemaphoreGetFdInfoKHR semaphoreGetFdInfoKHR = {};
@@ -625,10 +645,10 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
             oidn_timeline_semaphore_per_slot[i] = oidn_device.newSemaphore(
                 oidn::ExternalSemaphoreTypeFlag::TimelineSemaphoreFD, fd_semaphore_handle);
-            close(fd_semaphore_handle);
+            check_oidn_import(oidn_timeline_semaphore_per_slot[i],
+                              "Failed to import per-slot Vulkan timeline semaphore into OIDN.",
+                              fd_semaphore_handle);
 #endif
-            check_oidn_error(oidn_device,
-                             "Failed to import per-slot Vulkan timeline semaphore into OIDN.");
         }
     }
 
@@ -670,7 +690,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                 win32_semaphore_handle,
                 nullptr);
             CloseHandle(win32_semaphore_handle);
-            check_oidn_error(oidn_device, "Failed to import Vulkan binary semaphore into OIDN.");
+            check_oidn_import(oidn_semaphore, "Failed to import Vulkan binary semaphore into OIDN.");
             return oidn_semaphore;
 #else
             int fd_semaphore_handle;
@@ -691,8 +711,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
             auto oidn_semaphore = oidn_device.newSemaphore(
                 oidn::ExternalSemaphoreTypeFlag::OpaqueFD, fd_semaphore_handle);
-            close(fd_semaphore_handle);
-            check_oidn_error(oidn_device, "Failed to import Vulkan binary semaphore into OIDN.");
+            check_oidn_import(
+                oidn_semaphore, "Failed to import Vulkan binary semaphore into OIDN.", fd_semaphore_handle);
             return oidn_semaphore;
 #endif
         };
@@ -721,7 +741,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                                    nullptr,
                                                    accum_buffer->size());
         CloseHandle(accum_buffer_handle);
-        check_oidn_error(oidn_device, "Failed to import Vulkan accum buffer into OIDN.");
+        check_oidn_import(input_buffer, "Failed to import Vulkan accum buffer into OIDN.");
 
         HANDLE denoise_buffer_handle = denoise_buffer->external_mem_handle(external_mem_type);
         auto output_buffer = oidn_device.newBuffer(oidn_external_mem_type,
@@ -729,21 +749,21 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                                    nullptr,
                                                    denoise_buffer->size());
         CloseHandle(denoise_buffer_handle);
-        check_oidn_error(oidn_device, "Failed to import Vulkan denoise buffer into OIDN.");
+        check_oidn_import(output_buffer, "Failed to import Vulkan denoise buffer into OIDN.");
 #else
         int accum_buffer_fd = accum_buffer->external_mem_handle(external_mem_type);
         auto input_buffer = oidn_device.newBuffer(oidn_external_mem_type,
                                                   accum_buffer_fd,
                                                   accum_buffer->size());
-        close(accum_buffer_fd);
-        check_oidn_error(oidn_device, "Failed to import Vulkan accum buffer into OIDN.");
+        check_oidn_import(
+            input_buffer, "Failed to import Vulkan accum buffer into OIDN.", accum_buffer_fd);
 
         int denoise_buffer_fd = denoise_buffer->external_mem_handle(external_mem_type);
         auto output_buffer = oidn_device.newBuffer(oidn_external_mem_type,
                                                    denoise_buffer_fd,
                                                    denoise_buffer->size());
-        close(denoise_buffer_fd);
-        check_oidn_error(oidn_device, "Failed to import Vulkan denoise buffer into OIDN.");
+        check_oidn_import(
+            output_buffer, "Failed to import Vulkan denoise buffer into OIDN.", denoise_buffer_fd);
 #endif
 
         oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
